@@ -4,6 +4,8 @@ The GUI starts as a browser application.
 
 NIMO must be installed from [https://nims-da.github.io/nimo](https://github.com/NIMS-DA/nimo) beforehand when used.
 
+<img width="1474" alt="Image" src="https://github.com/user-attachments/assets/9e500401-f4ff-483a-a789-471407161826" />
+
 # Install
 
   1. Download or clone the github repository
