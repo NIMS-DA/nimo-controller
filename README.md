@@ -1,7 +1,8 @@
 # nimo-controller
 This is the GUI controller of NIMO.
 The GUI starts as a browser application.
-The instrallion of nimo is needed from https://nims-da.github.io/nimo
+
+NIMO must be installed from https://nims-da.github.io/nimo beforehand when used.
 
 # Install
 
