@@ -15,13 +15,14 @@ NIMO must be installed from [https://nims-da.github.io/nimo](https://github.com/
   2. Install using poetry in the nimo-controller-main folder
 
   ```bash
+  cd nimo-controller-[latest version]
   poetry install
   ```
 
 # Starting the program
 
 ```
-cd nimo-controller-[latest version]
+cd nimo_gui
 streamlit run app.py
 ```
 
