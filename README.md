@@ -2,7 +2,7 @@
 This is the GUI controller of NIMO.
 The GUI starts as a browser application.
 
-NIMO must be installed from https://nims-da.github.io/nimo beforehand when used.
+NIMO must be installed from [https://nims-da.github.io/nimo](https://github.com/NIMS-DA/nimo) beforehand when used.
 
 # Install
 
