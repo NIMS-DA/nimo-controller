@@ -10,7 +10,7 @@ APP_TITLE: str = 'NIMO'
 HIDE_ST_STYLE = """
     <style>
         div[data-testid="stApp"] {
-            background: #CCCCCC;
+            background: #EEEEE;
         }
         div[data-testid="stApp"] div > section > div > div > div > div > div > div > div > div > div > div {
             background: #FFFFFF;
