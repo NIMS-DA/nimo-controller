@@ -23,7 +23,7 @@ NIMO must be installed from [https://nims-da.github.io/nimo](https://github.com/
 
 # Starting the program
 
-```
+```bash
 cd nimo_gui
 streamlit run app.py
 ```
