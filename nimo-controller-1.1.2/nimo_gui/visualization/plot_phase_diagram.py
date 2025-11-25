@@ -85,8 +85,8 @@ def plot(input_file, fig_folder = None):
         
         fig = plt.figure()
 
-        #for i in unlabeled_index_list:
-        #    plt.scatter(data_list[i][0], data_list[i][1], c=[color_list[predicted_all_labels[i]]], marker = 's')
+        for i in unlabeled_index_list:
+            plt.scatter(data_list[i][0], data_list[i][1], c="white", s=0, marker = 'o')
 
         for i in labeled_index_list:
             plt.scatter(data_list[i][0], data_list[i][1], c=[color_list[label_list[i]]], marker="o")
