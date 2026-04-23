@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>NIMO Controller</title>
+  <script src="https://unpkg.com/blockly/blockly.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+  <div id="appRoot">
+    <!-- Header -->
+    <div id="header">
+      <div class="header-left">
+        <img src="https://nims-da.github.io/nimo/ja/_static/NIMO.png" class="logo" alt="NIMO Logo">
+        <span class="title-text">NIMO Controller</span>
+      </div>
+      <div class="mode-toggle">
+        <span class="mode-toggle__label" data-mode="blockly">Blockly</span>
+        <button id="modeToggle" class="mode-toggle__switch" type="button" title="Switch mode">
+          <span class="mode-toggle__knob"></span>
+        </button>
+        <span class="mode-toggle__label" data-mode="agent">Agent</span>
+      </div>
+    </div>
+
+    <!-- Blockly mode -->
+    <div id="blocklyMode" class="mode-view active">
+      <div id="container">
+        <div class="card" id="leftPanel">
+          <div id="blocklyHeader">
+            <div class="blockly-header-left">
+              <div class="blockly-title">Workflow</div>
+              <button class="btn-add-tools" id="addToolsBtn" type="button">+ Add server</button>
+              <button class="btn-add-tools" id="uploadCsvBtn" type="button">Upload candidates file</button>
+              <input type="file" id="csvFileInput" accept=".csv" hidden />
+            </div>
+            <button class="btn btn-primary" id="runBtn" type="button">▶ Run</button>
+          </div>
+          <div id="workspace"></div>
+          <div id="chatBox">
+            <textarea id="chatInput" placeholder="Describe a workflow to generate blocks..."></textarea>
+            <button class="btn btn-primary" id="chatSend" type="button">Send</button>
+          </div>
+        </div>
+        <div id="resizeHandle"></div>
+        <div class="card" id="sidepanel">
+          <div id="logHeader" class="log-header">
+            <div class="log-header__title">Execution log</div>
+            <div class="log-header__controls">
+              <button class="btn btn-ghost" type="button" id="clearLogBtn">Clear</button>
+            </div>
+          </div>
+          <div id="logWrap">
+            <div id="log" class="log-placeholder">
+              <div class="chat-placeholder">Logs appear here…</div>
+            </div>
+            <div id="logStatus" class="chat-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent mode -->
+    <div id="agentMode" class="mode-view">
+      <div class="agent-sidebar">
+        <div class="agent-sidebar__title">MCP Servers</div>
+        <div id="agentServerList" class="agent-sidebar__list"></div>
+        <button class="btn-add-tools" id="agentAddServerBtn" type="button">+ Add Server</button>
+      </div>
+      <div id="agentChat" class="agent-chat agent-chat--centered">
+        <div id="agentLog" class="agent-chat__log"></div>
+        <div class="agent-chat__input">
+          <textarea id="agentInput" placeholder="Ask the agent to perform tasks..."></textarea>
+          <button class="btn btn-primary" id="agentSend" type="button">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings overlay -->
+    <div id="settingsOverlay" class="settings-overlay">
+      <div class="settings-modal">
+        <div class="settings-modal__header">
+          <span class="settings-modal__title">Settings</span>
+          <button id="settingsCloseBtn" class="settings-modal__close">&times;</button>
+        </div>
+        <div id="settingsPanel" class="settings-modal__body"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/frontend.js" defer></script>
+</body>
+</html>
