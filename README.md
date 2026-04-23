@@ -2,12 +2,17 @@
 
 ## Installation
 
-Installation requires [uv](https://docs.astral.sh/uv/).
+Using [uv](https://docs.astral.sh/uv/) is recommended for development:
 
 ```
 git clone https://github.com/NIMS-DA/nimo-controller.git
 cd nimo-controller
 uv sync
+```
+
+Alternatively, install using pip:
+```
+pip install nimo-controller
 ```
 
 ## Examples
