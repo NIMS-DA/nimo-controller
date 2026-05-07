@@ -98,6 +98,11 @@ NIMO_MCP_NAME: str = "nimo"
 NIMO_SCRIPT: str = str(NIMO_SERVER_SCRIPT)
 NIMO_CLIENT_ONLY: bool = False
 
+# When set, connect to NIMO over HTTP instead of launching it in-process / via stdio.
+# Set nimo_mcp_port in config.yaml to enable HTTP mode (e.g. nimo_mcp_port: 8899)
+_nimo_mcp_port = _cfg.get("nimo_mcp_port")
+NIMO_MCP_URL: Optional[str] = f"http://localhost:{_nimo_mcp_port}/mcp" if _nimo_mcp_port else None
+
 # Additional MCP servers
 _mcp_raw = _cfg.get("mcp_servers") or {}
 MCP_SERVERS: Dict[str, str] = {str(k): str(v) for k, v in _mcp_raw.items()} if isinstance(_mcp_raw, dict) else {}
@@ -394,15 +399,24 @@ def _build_mcp_servers(
     """Construct MCP server instances for the Agents SDK."""
     out: list = []
     if include_nimo:
-        # Launch as a module so intra-package relative imports resolve.
-        out.append(MCPServerStdio(
-            name=NIMO_MCP_NAME,
-            params={
-                "command": sys.executable,
-                "args": ["-m", "nimo_controller.nimo_mcp.nimo_server"],
-            },
-            cache_tools_list=True, require_approval=True,
-        ))
+        if NIMO_MCP_URL:
+            # Connect to an already-running NIMO MCP server over HTTP.
+            out.append(MCPServerStreamableHttp(
+                name=NIMO_MCP_NAME,
+                params={"url": NIMO_MCP_URL},
+                cache_tools_list=True, require_approval=True,
+                client_session_timeout_seconds=600,
+            ))
+        else:
+            # Launch as a module so intra-package relative imports resolve.
+            out.append(MCPServerStdio(
+                name=NIMO_MCP_NAME,
+                params={
+                    "command": sys.executable,
+                    "args": ["-m", "nimo_controller.nimo_mcp.nimo_server"],
+                },
+                cache_tools_list=True, require_approval=True,
+            ))
     for sid, url in other_servers.items():
         out.append(MCPServerStreamableHttp(
             name=sid, params={"url": url},
@@ -839,9 +853,13 @@ async def lifespan(app: FastAPI):
     import logging
     log = logging.getLogger("nimo")
 
-    # NIMO client (in-process)
-    from .nimo_mcp.nimo_server import mcp as nimo_mcp_server
-    nimo = Client(nimo_mcp_server)
+    # NIMO client — HTTP mode when nimo_mcp_url is configured, otherwise in-process.
+    if NIMO_MCP_URL:
+        log.info("Connecting to NIMO MCP server over HTTP: %s", NIMO_MCP_URL)
+        nimo = Client(NIMO_MCP_URL)
+    else:
+        from .nimo_mcp.nimo_server import mcp as nimo_mcp_server
+        nimo = Client(nimo_mcp_server)
     await nimo.__aenter__()
     app.state.client_nimo = nimo
 

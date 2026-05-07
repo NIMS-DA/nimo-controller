@@ -2,16 +2,6 @@
 
 This module wraps the nimo library in a FastMCP server so that the
 NIMO Controller UI can call optimization routines via MCP.
-
-Directory layout (managed automatically):
-
-    nimo_mcp/
-    ├── nimo_server.py      # this file
-    ├── candidates.csv      # master candidates uploaded by the user
-    └── results/
-        └── <timestamp>/    # one directory per workflow run
-            ├── candidates.csv   # working copy (updated by nimo)
-            └── proposals.csv    # proposals generated during the run
 """
 
 import contextlib
@@ -254,4 +244,28 @@ mcp.tool(wrapper.plot_history_best)
 mcp.tool(wrapper.plot_phase_diagram)
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio", log_level="DEBUG")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NIMO MCP Server")
+    parser.add_argument(
+        "--transport",
+        default="stdio",
+        choices=["stdio", "streamable-http"],
+        help="Transport to use (default: stdio)",
+    )
+    parser.add_argument("--host", default="localhost", help="HTTP bind host (default: localhost)")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP bind port (default: 8000)")
+    parser.add_argument("--path", default="/mcp", help="HTTP mount path (default: /mcp)")
+    parser.add_argument("--log-level", default="INFO", help="Log level (default: INFO)")
+    args = parser.parse_args()
+
+    if args.transport == "streamable-http":
+        mcp.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+            path=args.path,
+            log_level=args.log_level,
+        )
+    else:
+        mcp.run(transport="stdio", log_level=args.log_level)
