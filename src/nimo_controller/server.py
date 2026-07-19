@@ -35,6 +35,7 @@ from .paths import (
     RESULTS_DIR,
     STATIC_DIR,
     TEMPLATES_DIR,
+    USER_DATA_DIR,
     ensure_user_dirs,
     resolve_config_path,
 )
@@ -922,6 +923,9 @@ async def get_config():
         "model": LLM_MODEL,
         "port": SERVER_PORT,
         "config_path": str(_CONFIG_PATH),
+        "data_dir": str(USER_DATA_DIR),
+        "candidates_file": str(CANDIDATES_FILE),
+        "results_dir": str(RESULTS_DIR),
     }
 
 
@@ -1008,9 +1012,11 @@ class AddServerRequest(BaseModel):
 
 @app.get("/settings/servers")
 async def list_servers():
-    out = [{"name": NIMO_MCP_NAME, "builtin": True}]
+    # nimo can only be reconnected when it runs over HTTP (in-process has no
+    # separate process to re-attach to).
+    out = [{"name": NIMO_MCP_NAME, "builtin": True, "reconnectable": NIMO_MCP_URL is not None}]
     for name, url in app.state.dynamic_servers.items():
-        out.append({"name": name, "url": url, "builtin": False})
+        out.append({"name": name, "url": url, "builtin": False, "reconnectable": True})
     return {"ok": True, "servers": out}
 
 
@@ -1072,6 +1078,77 @@ async def remove_server(name: str):
         except Exception as e:
             return {"ok": False, "error": f"Agent rebuild failed: {e}"}
     return {"ok": True, "name": name}
+
+
+@app.post("/settings/servers/{name}/reconnect")
+async def reconnect_server(name: str):
+    """Re-establish the connection to an already-registered MCP server.
+
+    Use this after the target server has been restarted: the stored URL is
+    reused so there is no need to remove and re-add the server. The new client
+    is connected and verified *before* the old one is dropped, so a failed
+    reconnect (e.g. the server is still down) leaves the previous connection
+    untouched.
+    """
+    async with app.state.server_lock:
+        # Built-in NIMO server (swaps app.state.client_nimo).
+        if name == NIMO_MCP_NAME:
+            if not NIMO_MCP_URL:
+                return {"ok": False,
+                        "error": "NIMO runs in-process and has no separate server to reconnect to"}
+            old = getattr(app.state, "client_nimo", None)
+            new = Client(NIMO_MCP_URL)
+            try:
+                await new.__aenter__()
+                await new.list_tools()
+            except Exception as e:
+                try:
+                    await new.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"Failed to reconnect: {e}"}
+            app.state.client_nimo = new
+            if old is not None:
+                try:
+                    await old.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            try:
+                await _rebuild_agents(app)
+            except Exception as e:
+                return {"ok": False, "error": f"Agent rebuild failed: {e}"}
+            return {"ok": True, "name": name, "url": NIMO_MCP_URL}
+
+        # Dynamic servers (swaps the entry in app.state.mcp_clients).
+        url = app.state.dynamic_servers.get(name)
+        if url is None:
+            return {"ok": False, "error": f"Server '{name}' not found"}
+
+        clients: Dict[str, Client] = app.state.mcp_clients
+        old = clients.get(name)
+        new = Client(url)
+        try:
+            await new.__aenter__()
+            await new.list_tools()
+        except Exception as e:
+            try:
+                await new.__aexit__(None, None, None)
+            except Exception:
+                pass
+            return {"ok": False, "error": f"Failed to reconnect: {e}"}
+
+        clients[name] = new
+        app.state.dynamic_servers[name] = url
+        if old is not None:
+            try:
+                await old.__aexit__(None, None, None)
+            except Exception:
+                pass
+        try:
+            await _rebuild_agents(app)
+        except Exception as e:
+            return {"ok": False, "error": f"Agent rebuild failed: {e}"}
+    return {"ok": True, "name": name, "url": url}
 
 
 # ---------------------------------------------------------------------------

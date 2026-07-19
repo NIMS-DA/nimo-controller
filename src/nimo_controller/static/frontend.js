@@ -937,6 +937,7 @@
   async function apiListServers() { return (await apiFetch("/settings/servers")).json(); }
   async function apiAddServer(name, url) { return (await apiFetch("/settings/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, url }) })).json(); }
   async function apiRemoveServer(name) { return (await apiFetch(`/settings/servers/${encodeURIComponent(name)}`, { method: "DELETE" })).json(); }
+  async function apiReconnectServer(name) { return (await apiFetch(`/settings/servers/${encodeURIComponent(name)}/reconnect`, { method: "POST" })).json(); }
 
   function initSettingsPanel() {
     const panel = $("settingsPanel"); if (!panel) return;
@@ -968,8 +969,21 @@
         const n = document.createElement("span"); n.className = "settings-server-name"; n.textContent = srv.name;
         const u = document.createElement("span"); u.className = "settings-server-url"; u.textContent = srv.url;
         info.append(n, u); row.appendChild(info);
+
+        // Reconnect (↻): re-attach to the server using its stored URL,
+        // e.g. after the server has been restarted. Dynamic servers only.
+        if (!srv.builtin && srv.reconnectable !== false) {
+          const rc = document.createElement("button");
+          rc.className = "btn btn-ghost settings-reconnect-btn";
+          rc.textContent = "↻";
+          rc.title = "Reconnect";
+          rc.style.marginRight = "2px";
+          rc.addEventListener("click", () => handleReconnectServer(srv.name, rc));
+          row.appendChild(rc);
+        }
+
         if (srv.builtin) { const b = document.createElement("span"); b.className = "settings-badge-builtin"; b.textContent = "built-in"; row.appendChild(b); }
-        else { const d = document.createElement("button"); d.className = "btn btn-danger settings-delete-btn"; d.textContent = "Remove"; d.addEventListener("click", () => handleRemoveServer(srv.name)); row.appendChild(d); }
+        else { const d = document.createElement("button"); d.className = "btn btn-ghost settings-delete-btn"; d.textContent = "✕"; d.title = "Remove"; d.addEventListener("click", () => handleRemoveServer(srv.name)); row.appendChild(d); }
         list.appendChild(row);
       }
       if (!data.servers.length) list.innerHTML = '<div class="settings-empty">No servers</div>';
@@ -994,6 +1008,21 @@
     if (!confirm(`Remove "${name}"?`)) return;
     try { const d = await apiRemoveServer(name); if (!d.ok) throw new Error(d.error); await refreshServerList(); try { await buildToolbox(); } catch {} refreshAgentSidebar(); logOk("Settings", `Server "${name}" removed.`); }
     catch (e) { const err = $("settingsError"); if (err) err.textContent = String(e); }
+  }
+
+  async function handleReconnectServer(name, btn) {
+    const err = $("settingsError"); if (err) err.textContent = "";
+    const orig = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+    try {
+      const d = await apiReconnectServer(name); if (!d.ok) throw new Error(d.error);
+      // refreshServerList() re-renders the row, so no need to restore btn on success.
+      await refreshServerList(); try { await buildToolbox(); } catch {} refreshAgentSidebar();
+      logOk("Settings", `Server "${name}" reconnected.`);
+    } catch (e) {
+      if (err) err.textContent = String(e);
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
   }
 
   // =========================================================================
