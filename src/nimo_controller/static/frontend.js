@@ -1087,7 +1087,21 @@
   // =========================================================================
   // Agent mode — chat with MCP approval
   // =========================================================================
-  const agentState = { pending: false, gateCallId: null, queuedApproval: null, suppressed: new Map() };
+  const agentState = { pending: false, gateCallId: null, queuedApproval: null, suppressed: new Map(), autoApprove: false };
+
+  /** Toggle auto-approval of MCP tool calls in agent mode. */
+  function setAutoApprove(on) {
+    agentState.autoApprove = !!on;
+    const sw = $("autoApproveToggle");
+    if (sw) sw.classList.toggle("active", agentState.autoApprove);
+    const row = $("autoApproveRow");
+    if (row) row.setAttribute("aria-checked", agentState.autoApprove ? "true" : "false");
+    localStorage.setItem("nimo_auto_approve_v1", agentState.autoApprove ? "1" : "0");
+    // If switched on while a tool call is already waiting, approve it now.
+    if (agentState.autoApprove && agentState.pending) {
+      agentLogEl()?.querySelector('.tool-approval .btn-primary')?.click();
+    }
+  }
   const agentCardMap = new Map();
   const agentNameMap = new Map();
 
@@ -1156,11 +1170,8 @@
 
   function agentAttachApproval({ card, sessionId, idx, call }) {
     agentRemoveApproval(card);
-    agentUpdateCardOutput(card, "🛂 Approval required");
-    const wrap = document.createElement("div"); wrap.className = "tool-approval"; wrap.dataset.role = "approval";
     const approveBtn = document.createElement("button"); approveBtn.className = "btn btn-primary"; approveBtn.textContent = "Approve";
     const rejectBtn = document.createElement("button"); rejectBtn.className = "btn btn-danger"; rejectBtn.textContent = "Reject";
-    wrap.append(approveBtn, rejectBtn); card.appendChild(wrap);
     const cid = call?.call_id || null;
 
     const run = async (decision) => {
@@ -1184,6 +1195,17 @@
     };
     approveBtn.addEventListener("click", () => run("approve"));
     rejectBtn.addEventListener("click", () => run("reject"));
+
+    // Auto-approve: skip the buttons and run the tool immediately.
+    if (agentState.autoApprove) {
+      agentUpdateCardOutput(card, "⚡ Auto-approved");
+      run("approve");
+      return;
+    }
+
+    agentUpdateCardOutput(card, "🛂 Approval required");
+    const wrap = document.createElement("div"); wrap.className = "tool-approval"; wrap.dataset.role = "approval";
+    wrap.append(approveBtn, rejectBtn); card.appendChild(wrap);
   }
 
   function agentShowApproval({ sessionId, idx, call }) {
@@ -1311,6 +1333,14 @@
     // Agent mode chat
     $("agentSend")?.addEventListener("click", sendAgentChat);
     $("agentInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendAgentChat(); } });
+
+    // Auto-approve toggle (agent mode)
+    setAutoApprove(localStorage.getItem("nimo_auto_approve_v1") === "1");
+    const autoApproveRow = $("autoApproveRow");
+    autoApproveRow?.addEventListener("click", () => setAutoApprove(!agentState.autoApprove));
+    autoApproveRow?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAutoApprove(!agentState.autoApprove); }
+    });
 
     // Mode toggle
     $("modeToggle")?.addEventListener("click", () => setMode(currentMode === "blockly" ? "agent" : "blockly"));

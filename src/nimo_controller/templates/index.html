@@ -68,6 +68,22 @@
         <div class="agent-sidebar__title">MCP Servers</div>
         <div id="agentServerList" class="agent-sidebar__list"></div>
         <button class="btn-add-tools" id="agentAddServerBtn" type="button">+ Add Server</button>
+
+        <div class="agent-sidebar__spacer"></div>
+
+        <div class="agent-sidebar__section">
+          <div class="agent-sidebar__title">Tool execution</div>
+          <div class="auto-approve" id="autoApproveRow" role="switch"
+               aria-checked="false" tabindex="0" title="Toggle auto-approve">
+            <span class="auto-approve__text">
+              <span class="auto-approve__name">Auto-approve</span>
+              <span class="auto-approve__hint">Run tools without asking</span>
+            </span>
+            <span id="autoApproveToggle" class="mode-toggle__switch" aria-hidden="true">
+              <span class="mode-toggle__knob"></span>
+            </span>
+          </div>
+        </div>
       </div>
       <div id="agentChat" class="agent-chat agent-chat--centered">
         <div id="agentLog" class="agent-chat__log"></div>
