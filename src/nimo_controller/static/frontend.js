@@ -61,7 +61,9 @@
     row.className = `chat-row ${role}`;
     const bubble = document.createElement("div");
     bubble.className = role === "user" ? "user-bubble" : "assistant-bubble";
-    bubble.textContent = String(text ?? "");
+    // Assistant prose is rendered as markdown; user input stays verbatim.
+    if (role === "assistant") renderMarkdownInto(bubble, text, true);
+    else bubble.textContent = String(text ?? "");
     row.appendChild(bubble);
     el.appendChild(row);
     el.scrollTop = el.scrollHeight;
@@ -1089,8 +1091,9 @@
   // =========================================================================
   const agentState = { pending: false, autoApprove: false };
   // bubble: assistant bubble being filled by streaming deltas.
+  // raw: accumulated markdown source for that bubble.
   // thinking: the "waiting for the model" animated placeholder row, if shown.
-  const agentStreamState = { bubble: null, thinking: null };
+  const agentStreamState = { bubble: null, raw: "", thinking: null, lastRender: 0 };
 
   /** Toggle auto-approval of MCP tool calls in agent mode. */
   function setAutoApprove(on) {
@@ -1109,12 +1112,69 @@
 
   const agentLogEl = () => $("agentLog");
 
+  const escapeHtml = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  // Math delimiters, matched BEFORE markdown so marked can't strip the
+  // backslashes of \( \) \[ \] (CommonMark treats "\(" as an escaped "(").
+  // $$ before $ so display math is captured first.
+  const MATH_PATTERNS = [
+    { re: /\$\$([\s\S]+?)\$\$/g, display: true },
+    { re: /\\\[([\s\S]+?)\\\]/g, display: true },
+    { re: /\\\(([\s\S]+?)\\\)/g, display: false },
+    { re: /\$(?!\s)([^\n$]+?)(?<!\s)\$/g, display: false },
+  ];
+
+  /**
+   * Render markdown *raw* into *el* as sanitized HTML.
+   * When *withMath* is true, LaTeX spans ($$…$$, \[…\], \(…\), $…$) are
+   * extracted before markdown, typeset with KaTeX, and injected back after
+   * sanitizing — so markdown never mangles the delimiters or the math body.
+   * Falls back to plain text if the CDN libraries have not loaded.
+   */
+  function renderMarkdownInto(el, raw, withMath) {
+    const src = String(raw ?? "");
+    if (!window.marked) { el.textContent = src; return; }
+
+    // 1. Pull math out, leaving inert placeholders markdown won't touch.
+    let text = src;
+    const math = [];
+    if (withMath && window.katex) {
+      for (const { re, display } of MATH_PATTERNS) {
+        text = text.replace(re, (_m, expr) => {
+          const token = `@@NIMOMATH${math.length}@@`;
+          math.push({ expr, display });
+          return token;
+        });
+      }
+    }
+
+    // 2. Markdown → 3. sanitize (still just placeholders where math was).
+    let html;
+    try { html = window.marked.parse(text, { breaks: true, gfm: true }); }
+    catch { el.textContent = src; return; }
+    if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
+
+    // 4. Swap placeholders for trusted KaTeX output (injected post-sanitize).
+    if (math.length) {
+      html = html.replace(/@@NIMOMATH(\d+)@@/g, (m, i) => {
+        const item = math[+i]; if (!item) return m;
+        try { return window.katex.renderToString(item.expr, { displayMode: item.display, throwOnError: false }); }
+        catch { return escapeHtml(item.display ? `$$${item.expr}$$` : `$${item.expr}$`); }
+      });
+    }
+
+    el.innerHTML = html;
+    el.classList.add("markdown");
+  }
+
   function agentAppendBubble(role, text) {
     const el = agentLogEl(); if (!el) return;
     const row = document.createElement("div"); row.className = `chat-row ${role}`;
     const bubble = document.createElement("div");
     bubble.className = role === "user" ? "user-bubble" : "assistant-bubble";
-    bubble.textContent = String(text ?? "");
+    // User input is shown verbatim; assistant prose is rendered as markdown.
+    if (role === "assistant") renderMarkdownInto(bubble, text, true);
+    else bubble.textContent = String(text ?? "");
     row.appendChild(bubble); el.appendChild(row); el.scrollTop = el.scrollHeight;
   }
 
@@ -1158,8 +1218,19 @@
 
   // --- Streaming assistant text -------------------------------------------
 
-  /** Start a fresh assistant bubble on the next streamed delta. */
-  function agentResetBubble() { agentStreamState.bubble = null; }
+  /** Finalize the current streaming bubble: full markdown + math render. */
+  function agentFinalizeBubble() {
+    if (agentStreamState.bubble) {
+      renderMarkdownInto(agentStreamState.bubble, agentStreamState.raw, true);
+    }
+  }
+
+  /** Finalize and detach the current bubble so the next delta starts fresh. */
+  function agentResetBubble() {
+    agentFinalizeBubble();
+    agentStreamState.bubble = null;
+    agentStreamState.raw = "";
+  }
 
   /** Remove the "thinking" placeholder if present. */
   function agentHideThinking() {
@@ -1189,8 +1260,17 @@
       const bubble = document.createElement("div"); bubble.className = "assistant-bubble";
       row.appendChild(bubble); el.appendChild(row);
       agentStreamState.bubble = bubble;
+      agentStreamState.raw = "";
+      agentStreamState.lastRender = 0;
     }
-    agentStreamState.bubble.textContent += text;
+    agentStreamState.raw += text;
+    // Re-render markdown at most ~every 60ms while streaming (math is deferred
+    // to finalize since delimiters are often still unbalanced mid-stream).
+    const now = (window.performance && performance.now) ? performance.now() : Date.now();
+    if (now - agentStreamState.lastRender > 60) {
+      agentStreamState.lastRender = now;
+      renderMarkdownInto(agentStreamState.bubble, agentStreamState.raw, false);
+    }
     el.scrollTop = el.scrollHeight;
   }
 
@@ -1278,9 +1358,11 @@
       agentShowApproval({ sessionId: data.session_id, idx: data.interruption_index ?? 0, call: data.call });
     } else if (event === "final") {
       agentHideThinking();
+      agentResetBubble();  // finalize streamed text (full markdown + math)
       agentState.pending = false;
     } else if (event === "error") {
       agentHideThinking();
+      agentResetBubble();
       agentState.pending = false;
       agentAppendBubble("assistant", `Error: ${data.error || "stream error"}`);
     }
