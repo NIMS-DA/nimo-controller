@@ -1087,7 +1087,10 @@
   // =========================================================================
   // Agent mode — chat with MCP approval
   // =========================================================================
-  const agentState = { pending: false, gateCallId: null, queuedApproval: null, suppressed: new Map(), autoApprove: false };
+  const agentState = { pending: false, autoApprove: false };
+  // bubble: assistant bubble being filled by streaming deltas.
+  // thinking: the "waiting for the model" animated placeholder row, if shown.
+  const agentStreamState = { bubble: null, thinking: null };
 
   /** Toggle auto-approval of MCP tool calls in agent mode. */
   function setAutoApprove(on) {
@@ -1103,7 +1106,6 @@
     }
   }
   const agentCardMap = new Map();
-  const agentNameMap = new Map();
 
   const agentLogEl = () => $("agentLog");
 
@@ -1154,17 +1156,45 @@
     }
   }
 
-  async function apiAgentRun(message) {
-    const r = await apiFetch("/agent/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }) });
-    if (!r.ok) throw new Error(`agent/run ${r.status}`);
-    return r.json();
+  // --- Streaming assistant text -------------------------------------------
+
+  /** Start a fresh assistant bubble on the next streamed delta. */
+  function agentResetBubble() { agentStreamState.bubble = null; }
+
+  /** Remove the "thinking" placeholder if present. */
+  function agentHideThinking() {
+    agentStreamState.thinking?.remove();
+    agentStreamState.thinking = null;
   }
 
-  async function apiAgentDecision(sid, decision, idx) {
-    const r = await apiFetch("/agent/decision", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sid, decision, interruption_index: idx ?? 0 }) });
-    if (!r.ok) throw new Error(`agent/decision ${r.status}`);
-    return r.json();
+  /** Show an animated "thinking" placeholder at the bottom of the log. */
+  function agentShowThinking() {
+    agentHideThinking();
+    const el = agentLogEl(); if (!el) return;
+    const row = document.createElement("div"); row.className = "chat-row assistant";
+    const bubble = document.createElement("div"); bubble.className = "assistant-bubble thinking";
+    const dots = document.createElement("span"); dots.className = "thinking-dots";
+    dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+    bubble.appendChild(dots); row.appendChild(bubble); el.appendChild(row);
+    agentStreamState.thinking = row;
+    el.scrollTop = el.scrollHeight;
   }
+
+  /** Append a streamed text chunk, creating the assistant bubble lazily. */
+  function agentAppendDelta(text) {
+    if (!text) return;
+    const el = agentLogEl(); if (!el) return;
+    if (!agentStreamState.bubble) {
+      const row = document.createElement("div"); row.className = "chat-row assistant";
+      const bubble = document.createElement("div"); bubble.className = "assistant-bubble";
+      row.appendChild(bubble); el.appendChild(row);
+      agentStreamState.bubble = bubble;
+    }
+    agentStreamState.bubble.textContent += text;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // --- Tool approval ------------------------------------------------------
 
   function agentRemoveApproval(card) { card?.querySelector('[data-role="approval"]')?.remove(); }
 
@@ -1172,26 +1202,22 @@
     agentRemoveApproval(card);
     const approveBtn = document.createElement("button"); approveBtn.className = "btn btn-primary"; approveBtn.textContent = "Approve";
     const rejectBtn = document.createElement("button"); rejectBtn.className = "btn btn-danger"; rejectBtn.textContent = "Reject";
-    const cid = call?.call_id || null;
 
     const run = async (decision) => {
       approveBtn.disabled = rejectBtn.disabled = true;
-      if (decision === "approve" && cid) agentState.gateCallId = cid;
       agentUpdateCardOutput(card, decision === "approve" ? "⏳ running…" : "🚫 rejected");
       agentRemoveApproval(card); busyStart("⏳");
+      if (decision === "reject") agentShowThinking();
       try {
-        const data = await apiAgentDecision(sessionId, decision, idx ?? 0);
-        if (!data.ok) throw new Error(data.error);
-        const sawMsg = agentRenderLogs(data.logs);
-        if (data.mode === "final") { agentState.pending = false; busyStop(); if (!sawMsg && data.reply) agentAppendBubble("assistant", data.reply); return; }
-        if (data.mode === "approval") {
-          agentState.pending = true;
-          agentState.queuedApproval = { sessionId: data.session_id, idx: 0, call: data.call };
-          if (decision === "reject" || !agentState.gateCallId) { const qa = agentState.queuedApproval; agentState.queuedApproval = null; agentState.gateCallId = null; if (qa) agentShowApproval(qa); }
-          busyStop(); return;
-        }
-        agentState.pending = false; busyStop();
-      } catch (e) { agentState.pending = false; busyStop(); agentUpdateCardOutput(card, `❌ ${e}`); }
+        await agentStreamTurn("/agent/decision/stream",
+          { session_id: sessionId, decision, interruption_index: idx ?? 0 });
+      } catch (e) {
+        agentState.pending = false;
+        agentAppendBubble("assistant", `Error: ${e}`);
+      } finally {
+        agentHideThinking();
+        busyStop();
+      }
     };
     approveBtn.addEventListener("click", () => run("approve"));
     rejectBtn.addEventListener("click", () => run("reject"));
@@ -1210,38 +1236,83 @@
 
   function agentShowApproval({ sessionId, idx, call }) {
     const cid = call?.call_id || null;
-    if (agentState.gateCallId) { agentState.queuedApproval = { sessionId, idx, call }; return; }
-    let card = cid && agentCardMap.get(cid);
-    if (!card && cid && agentState.suppressed.has(cid)) {
-      const s = agentState.suppressed.get(cid); agentState.suppressed.delete(cid);
-      card = agentAppendToolCard({ server: s.server, tool: s.tool, args: s.args });
-      agentCardMap.set(cid, card);
+    let card = cid ? agentCardMap.get(cid) : null;
+    if (!card) {
+      card = agentAppendToolCard({ server: call?.server_id || "", tool: call?.tool || "(tool)", args: call?.arguments ?? {} });
+      if (cid) agentCardMap.set(cid, card);
     }
-    if (!card) { card = agentAppendToolCard({ server: call?.server_id || "", tool: call?.tool || "(tool)", args: call?.arguments ?? {} }); if (cid) agentCardMap.set(cid, card); }
     agentAttachApproval({ card, sessionId, idx, call });
   }
 
-  function agentRenderLogs(logs) {
-    let sawMsg = false;
-    if (!Array.isArray(logs)) return sawMsg;
-    for (const it of logs) {
-      if (!it) continue;
-      if (it.type === "tool_call") {
-        const cid = it.call_id || ""; if (!cid || agentCardMap.has(cid)) continue;
-        const server = it.server_id || "", tool = it.tool || "(tool)", args = it.arguments ?? {};
-        if (agentState.gateCallId && cid !== agentState.gateCallId) { agentState.suppressed.set(cid, { server, tool, args }); continue; }
-        agentCardMap.set(cid, agentAppendToolCard({ server, tool, args }));
-        agentNameMap.set(cid, tool);
-      } else if (it.type === "tool_output") {
-        const cid = it.call_id || "", out = it.output, imgs = Array.isArray(it.images) ? it.images : undefined;
-        let card = cid ? agentCardMap.get(cid) : null;
-        if (!card && agentState.gateCallId) card = agentCardMap.get(agentState.gateCallId);
-        if (card) agentUpdateCardOutput(card, out, imgs);
-        else { const fb = agentAppendToolCard({ server: "", tool: "", args: {} }); agentUpdateCardOutput(fb, out, imgs); }
-        if (agentState.gateCallId && (!cid || cid === agentState.gateCallId)) { agentState.gateCallId = null; const qa = agentState.queuedApproval; agentState.queuedApproval = null; if (qa) agentShowApproval(qa); }
-      } else if (it.type === "message" && it.text) { sawMsg = true; agentAppendBubble("assistant", it.text); }
+  // --- SSE stream consumer ------------------------------------------------
+
+  /** Dispatch a single decoded SSE event to the agent UI. */
+  function agentHandleEvent(event, data) {
+    data = data || {};
+    if (event === "delta") {
+      agentHideThinking();
+      agentAppendDelta(data.text || "");
+    } else if (event === "message") {
+      // Full assistant text (providers that stream no token deltas).
+      agentHideThinking(); agentResetBubble();
+      if (data.text) agentAppendBubble("assistant", data.text);
+    } else if (event === "tool_call") {
+      // The tool card carries its own "running…" state, so drop the placeholder.
+      agentHideThinking(); agentResetBubble();
+      const cid = data.call_id || "";
+      if (cid && agentCardMap.has(cid)) return;
+      const card = agentAppendToolCard({ server: data.server_id || "", tool: data.tool || "(tool)", args: data.arguments ?? {} });
+      if (cid) agentCardMap.set(cid, card);
+    } else if (event === "tool_output") {
+      agentResetBubble();
+      const cid = data.call_id || "";
+      const imgs = Array.isArray(data.images) ? data.images : undefined;
+      let card = cid ? agentCardMap.get(cid) : null;
+      if (!card) { card = agentAppendToolCard({ server: "", tool: "", args: {} }); if (cid) agentCardMap.set(cid, card); }
+      agentUpdateCardOutput(card, data.output, imgs);
+      // The model now decides its next step — show the placeholder again.
+      agentShowThinking();
+    } else if (event === "approval") {
+      agentHideThinking(); agentResetBubble();
+      agentState.pending = true;
+      agentShowApproval({ sessionId: data.session_id, idx: data.interruption_index ?? 0, call: data.call });
+    } else if (event === "final") {
+      agentHideThinking();
+      agentState.pending = false;
+    } else if (event === "error") {
+      agentHideThinking();
+      agentState.pending = false;
+      agentAppendBubble("assistant", `Error: ${data.error || "stream error"}`);
     }
-    return sawMsg;
+  }
+
+  /** POST *body* to *url* and consume the SSE response, dispatching each frame. */
+  async function agentStreamTurn(url, body) {
+    const resp = await apiFetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!resp.ok || !resp.body) throw new Error(`${url} ${resp.status}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, sep); buf = buf.slice(sep + 2);
+        let event = "message", dataStr = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataStr += line.slice(5).replace(/^ /, "");
+        }
+        if (!dataStr) continue;
+        let data = null;
+        try { data = JSON.parse(dataStr); } catch { data = null; }
+        agentHandleEvent(event, data);
+      }
+    }
   }
 
   async function sendAgentChat() {
@@ -1253,24 +1324,16 @@
     if (chat) chat.classList.remove("agent-chat--centered");
     agentAppendBubble("user", text);
     input.value = "";
+    agentResetBubble();
     busyStart("⏳");
+    agentShowThinking();
     try {
-      const data = await apiAgentRun(text);
-      if (!data.ok) throw new Error(data.error || "Unknown error");
-      const sawMsg = agentRenderLogs(data.logs);
-      if (data.mode === "final") {
-        busyStop();
-        if (!sawMsg && data.reply) agentAppendBubble("assistant", data.reply);
-      } else if (data.mode === "approval") {
-        busyStop();
-        agentState.pending = true;
-        agentShowApproval({ sessionId: data.session_id, idx: 0, call: data.call });
-      } else {
-        busyStop();
-      }
+      await agentStreamTurn("/agent/run/stream", { message: text });
     } catch (e) {
-      busyStop();
       agentAppendBubble("assistant", `Error: ${e}`);
+    } finally {
+      agentHideThinking();
+      busyStop();
     }
   }
 

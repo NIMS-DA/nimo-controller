@@ -1360,7 +1360,13 @@ async def chat_run(req: ChatRunRequest):
 
 
 # ---------------------------------------------------------------------------
-# Agent API — Agent mode (MCP tools with approval)
+# Agent API — Agent mode (MCP tools with approval), streamed over SSE
+#
+# Streams assistant text token-by-token plus tool calls/outputs as they happen,
+# so the UI shows progress immediately instead of waiting for the whole turn.
+# The turn's HTTP stream ends on either a ``final`` frame (turn complete) or an
+# ``approval`` frame (an MCP tool needs user approval); in the latter case the
+# client resumes by POSTing to ``/agent/decision/stream``.
 # ---------------------------------------------------------------------------
 
 class AgentDecisionRequest(BaseModel):
@@ -1369,75 +1375,126 @@ class AgentDecisionRequest(BaseModel):
     interruption_index: int
 
 
-@app.post("/agent/run")
-async def agent_run(req: ChatRunRequest):
-    """Agent-mode chat: full MCP tool access with approval flow."""
-    _cleanup_sessions(app)
-    text = (req.message or "").strip()
-    if not text:
-        return {"ok": True, "mode": "final", "reply": "", "logs": []}
+def _sse_event(event: str, data: Any) -> str:
+    """Format an SSE frame without an id line (used by the agent stream)."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    agent: Agent = app.state.agent_agent
-    result = await Runner.run(agent, text)
-    pending = {str(getattr(i, "call_id", ""))
-               for i in (getattr(result, "interruptions", None) or [])}
-    logs = _extract_run_logs(result, None, hide_call_ids=pending)
 
-    if getattr(result, "interruptions", None):
+async def _agent_event_stream(app: FastAPI, agent: Agent, input_obj: Any):
+    """Run *agent* on *input_obj* with streaming and yield SSE frames.
+
+    Emits: ``delta`` (assistant text chunk), ``tool_call``, ``tool_output``,
+    ``message`` (full assistant text when a provider streams no deltas),
+    ``approval`` (tool approval required), ``final``, ``error``.
+    """
+    result = Runner.run_streamed(agent, input_obj)
+    saw_delta_for_msg = False
+    try:
+        async for ev in result.stream_events():
+            et = getattr(ev, "type", "")
+            if et == "raw_response_event":
+                data = getattr(ev, "data", None)
+                if getattr(data, "type", "") == "response.output_text.delta":
+                    delta = getattr(data, "delta", "") or ""
+                    if delta:
+                        saw_delta_for_msg = True
+                        yield _sse_event("delta", {"text": delta})
+            elif et == "run_item_stream_event":
+                item = getattr(ev, "item", None)
+                if isinstance(item, ToolCallItem):
+                    raw = getattr(item, "raw_item", None)
+                    call_id = _attr(raw, "call_id")
+                    yield _sse_event("tool_call", {
+                        "call_id": str(call_id) if call_id is not None else None,
+                        "tool": _attr(raw, "name", "") or "",
+                        "arguments": normalize_args(_attr(raw, "arguments", {})),
+                    })
+                elif isinstance(item, ToolCallOutputItem):
+                    raw = getattr(item, "raw_item", None)
+                    call_id = _attr(raw, "call_id")
+                    entry: dict[str, Any] = {
+                        "call_id": str(call_id) if call_id is not None else None,
+                        "output": normalize_tool_output(getattr(item, "output", None)),
+                    }
+                    imgs = extract_images(raw)
+                    if imgs:
+                        entry["images"] = imgs
+                    yield _sse_event("tool_output", entry)
+                elif isinstance(item, MessageOutputItem):
+                    text = ItemHelpers.text_message_output(item)
+                    # Only send the full message if the provider streamed no deltas
+                    # for it (otherwise the deltas already rendered the text).
+                    if text and not saw_delta_for_msg:
+                        yield _sse_event("message", {"text": text})
+                    saw_delta_for_msg = False
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 — surface any run error to the client
+        yield _sse_event("error", {"error": str(e)})
+        return
+
+    interruptions = getattr(result, "interruptions", None) or []
+    if interruptions:
         sid = uuid.uuid4().hex
-        s = ChatSession(id=sid, agent=agent,
-                        state=result.to_state(),
-                        interruptions=list(result.interruptions))
+        s = ChatSession(id=sid, agent=agent, state=result.to_state(),
+                        interruptions=list(interruptions))
         app.state.agent_sessions[sid] = s
-        return {
-            "ok": True, "mode": "approval",
-            "session_id": sid, "interruption_index": 0,
-            "pending_count": len(s.interruptions),
-            "call": _interruption_to_ui(s.interruptions[0]),
-            "logs": logs,
-        }
-
-    has_msg = any(x.get("type") == "message" and x.get("text") for x in logs)
-    reply = "" if has_msg else str(result.final_output)
-    return {"ok": True, "mode": "final", "reply": reply, "logs": logs}
-
-
-@app.post("/agent/decision")
-async def agent_decision(req: AgentDecisionRequest):
-    """Approve or reject a pending MCP tool call in agent mode."""
-    _cleanup_sessions(app)
-    sessions: Dict[str, ChatSession] = app.state.agent_sessions
-    s = sessions.get(req.session_id)
-    if not s:
-        return {"ok": False, "error": "Unknown or expired session_id"}
-    if not (0 <= req.interruption_index < len(s.interruptions)):
-        return {"ok": False, "error": "Invalid interruption_index"}
-    decision = (req.decision or "").lower().strip()
-    if decision not in ("approve", "reject"):
-        return {"ok": False, "error": "decision must be 'approve' or 'reject'"}
-
-    it = s.interruptions.pop(req.interruption_index)
-    (s.state.approve if decision == "approve" else s.state.reject)(it)
-
-    result = await Runner.run(s.agent, s.state)
-    pending = {str(getattr(i, "call_id", ""))
-               for i in (getattr(result, "interruptions", None) or [])}
-    logs = _extract_run_logs(result, s.seen_call_ids, hide_call_ids=pending)
-
-    if getattr(result, "interruptions", None):
-        s.state = result.to_state()
-        s.interruptions = list(result.interruptions)
-        return {
-            "ok": True, "mode": "approval", "session_id": s.id,
+        yield _sse_event("approval", {
+            "session_id": sid,
             "interruption_index": 0,
             "pending_count": len(s.interruptions),
             "call": _interruption_to_ui(s.interruptions[0]),
-            "logs": logs,
-        }
+        })
+    else:
+        yield _sse_event("final", {})
+
+
+@app.post("/agent/run/stream")
+async def agent_run_stream(req: ChatRunRequest):
+    """Agent-mode chat with SSE streaming."""
+    _cleanup_sessions(app)
+    text = (req.message or "").strip()
+
+    async def gen():
+        if not text:
+            yield _sse_event("final", {})
+            return
+        async for frame in _agent_event_stream(app, app.state.agent_agent, text):
+            yield frame
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/agent/decision/stream")
+async def agent_decision_stream(req: AgentDecisionRequest):
+    """Approve/reject a pending MCP tool call, then stream the resumed turn."""
+    _cleanup_sessions(app)
+    sessions: Dict[str, ChatSession] = app.state.agent_sessions
+    s = sessions.get(req.session_id)
+
+    def _err_stream(msg: str):
+        async def gen():
+            yield _sse_event("error", {"error": msg})
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    if not s:
+        return _err_stream("Unknown or expired session_id")
+    if not (0 <= req.interruption_index < len(s.interruptions)):
+        return _err_stream("Invalid interruption_index")
+    decision = (req.decision or "").lower().strip()
+    if decision not in ("approve", "reject"):
+        return _err_stream("decision must be 'approve' or 'reject'")
+
+    it = s.interruptions.pop(req.interruption_index)
+    (s.state.approve if decision == "approve" else s.state.reject)(it)
+    # Drop this session; a fresh one is created if the resumed turn interrupts again.
     sessions.pop(s.id, None)
-    has_msg = any(x.get("type") == "message" and x.get("text") for x in logs)
-    reply = "" if has_msg else str(result.final_output)
-    return {"ok": True, "mode": "final", "reply": reply, "logs": logs}
+
+    async def gen():
+        async for frame in _agent_event_stream(app, s.agent, s.state):
+            yield frame
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # Use the ``nimo-controller`` console script (see nimo_controller.cli) to run.
