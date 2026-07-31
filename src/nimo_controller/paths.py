@@ -1,14 +1,15 @@
 """Resource and runtime-data path resolution.
 
-Templates / static / default config are read from the installed package via
+Templates and static assets are read from the installed package via
 ``importlib.resources``.  Anything written at runtime (uploaded candidates,
 optimization results) lives under a data directory that is:
 
 1. taken from the ``data_dir`` key in ``config.yaml`` when present, or
-2. the current working directory otherwise (a ``results`` subfolder is
-   created there),
+2. ``~/.nimo-controller`` otherwise (holding ``candidates.csv`` and a
+   ``results`` subfolder),
 
-so the package itself stays read-only.
+so the package itself stays read-only and the location is the same regardless
+of where the app is launched from.
 """
 
 from __future__ import annotations
@@ -26,8 +27,6 @@ _APP_NAME = "nimo-controller"
 _PKG = files("nimo_controller")
 TEMPLATES_DIR: Path = Path(str(_PKG / "templates"))
 STATIC_DIR: Path = Path(str(_PKG / "static"))
-DEFAULT_CONFIG: Path = Path(str(_PKG / "data" / "default_config.yaml"))
-NIMO_SERVER_SCRIPT: Path = Path(str(_PKG / "nimo_mcp" / "nimo_server.py"))
 
 # User config location (used only to locate config.yaml). Independent of the
 # data directory, so resolving the config never depends on data_dir.
@@ -36,32 +35,38 @@ USER_CONFIG_DIR: Path = Path(
 )
 USER_CONFIG_FILE: Path = USER_CONFIG_DIR / "config.yaml"
 
+# What the UI last chose, remembered so the next launch starts where the last
+# one left off. Written by the app, unlike config.yaml which the user writes,
+# and kept beside it rather than in the data directory: it is a preference about
+# the agent, not part of any one campaign's results.
+AGENT_STATE_FILE: Path = USER_CONFIG_DIR / "agent-state.json"
+
 
 def resolve_config_path() -> Path:
     """Return the config file to use, in priority order.
 
     1. ``./config.yaml`` in the current working directory (development convenience)
     2. ``<user-config-dir>/config.yaml``
-    3. The default config bundled with the package
+
+    No config file is bundled with the package, so the user path is returned
+    even when it does not exist yet; callers treat a missing file as empty
+    config and fall back to their own defaults.
     """
 
     cwd_cfg = Path.cwd() / "config.yaml"
     if cwd_cfg.is_file():
         return cwd_cfg
 
-    if USER_CONFIG_FILE.is_file():
-        return USER_CONFIG_FILE
-
-    return DEFAULT_CONFIG
+    return USER_CONFIG_FILE
 
 
 def _resolve_data_dir() -> Path:
     """Determine the writable data directory.
 
     Uses the ``data_dir`` key from config.yaml when set; otherwise falls back
-    to the current working directory (where a ``results`` folder is created).
-    A relative ``data_dir`` is resolved against the current working directory,
-    and a leading ``~`` is expanded.
+    to ``~/.nimo-controller`` (a fixed per-user folder, independent of where
+    the app is launched from). A relative ``data_dir`` is resolved against the
+    current working directory, and a leading ``~`` is expanded.
     """
     try:
         cfg_path = resolve_config_path()
@@ -72,9 +77,9 @@ def _resolve_data_dir() -> Path:
             if data_dir:
                 return Path(str(data_dir)).expanduser().resolve()
     except Exception:
-        # Any problem reading the config -> fall back to the working directory.
+        # Any problem reading the config -> fall back to the default folder.
         pass
-    return Path.cwd()
+    return Path.home() / ".nimo-controller"
 
 
 # Writable per-user locations.

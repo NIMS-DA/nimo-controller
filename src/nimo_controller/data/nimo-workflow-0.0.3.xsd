@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Schema for the NIMO Controller workflow log XML (format version 0.0.3).
+  Reference/specification only — the app does not load this at runtime.
+
+  Root <nimo-workflow> has four sections:
+    <controller>  what produced the run: this app, nimo, and Python
+    <servers>     the MCP servers this run was connected to, with versions
+    <candidates>  the candidates snapshot this run started from (file name +
+                  SHA-256), plus its parameter and objective columns
+    <workflow>    the procedure: a sequence of statement blocks
+
+  Changes from 0.0.2:
+    - <controller> was added, as the first child of the root. <servers> already
+      recorded which build of each instrument server answered the calls; this
+      records which build made them, and which nimo chose the proposals. Its
+      attributes are all optional: a version that cannot be read is left out
+      rather than written as an empty string, so an absent attribute means
+      "unknown" and a present one is always a real answer.
+    - <nimo> was added. nimo runs in-process as direct Python calls, so it is
+      not a server under <servers> that a @server attribute could point at.
+      Its calls therefore get their own element instead of being <tool
+      server="nimo">, which keeps the procedure and the server list telling the
+      same story. @function names the call; arguments are attributes, as for
+      <tool>.
+    - The two directional selections are recorded as what they actually are:
+      maximization and minimization is one nimo selection call plus a
+      direction, so both serialize as function="selection" with
+      @minimization="true"/"false". The direction-less algorithms omit the
+      attribute, which is also what is passed down to nimo.
+    - <update> was removed. An update block is a nimo call that happens to
+      wrap other blocks, so it is <nimo function="update"> with those blocks
+      inside — one element for nimo instead of two spellings for one idea.
+
+  Notes:
+    - <tool> and <nimo> argument attributes are open (xs:anyAttribute). Their
+      values may be literals or references written as "proposal.<var>" /
+      "counter.<var>"; that convention is enforced by the serializer, not here.
+      In XSD 1.0 anyAttribute cannot override a declared attribute, so a tool
+      argument named "server"/"name" (on <tool>) or "function"/"minimization"
+      (on <nimo>) would collide with the declarations below. No such argument
+      exists in the shipped tools.
+    - <then>/<else> content is sometimes written inline on one line when the
+      branch holds a single call. That is formatting only; the content model is
+      the same as a multi-line branch.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+
+  <!-- ===== Root ===== -->
+  <xs:element name="nimo-workflow">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="controller" minOccurs="0"/>
+        <xs:element ref="servers"/>
+        <xs:element ref="candidates"/>
+        <xs:element ref="workflow"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== Controller (provenance of the run itself) ===== -->
+  <xs:element name="controller">
+    <xs:complexType>
+      <xs:attribute name="version" type="xs:string" use="optional"/>
+      <xs:attribute name="nimo" type="xs:string" use="optional"/>
+      <xs:attribute name="python" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== Servers ===== -->
+  <xs:element name="servers">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="server" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="server">
+    <xs:complexType>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+      <xs:attribute name="url" type="xs:anyURI" use="optional"/>
+      <xs:attribute name="version" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== Candidates ===== -->
+  <xs:element name="candidates">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="parameter" minOccurs="0" maxOccurs="unbounded"/>
+        <xs:element ref="objective" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="snapshot" type="xs:string" use="optional"/>
+      <xs:attribute name="sha256" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="parameter">
+    <xs:complexType>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="objective">
+    <xs:complexType>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== Workflow (procedure) ===== -->
+  <xs:element name="workflow">
+    <xs:complexType>
+      <xs:group ref="blocks"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- A sequence of statement blocks.
+       The occurrence constraints sit on the inner choice, not on the group's
+       own particle, where XSD forbids them (0.0.1 had them in the wrong place,
+       which made that schema fail to load at all). -->
+  <xs:group name="blocks">
+    <xs:sequence>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element ref="tool"/>
+        <xs:element ref="nimo"/>
+        <xs:element ref="repeat"/>
+        <xs:element ref="if"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+
+  <!-- ===== tool: an MCP server's tool. server/name required, plus arbitrary
+             argument attributes ===== -->
+  <xs:element name="tool">
+    <xs:complexType>
+      <xs:attribute name="server" type="xs:string" use="required"/>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+      <xs:anyAttribute processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== nimo: an in-process nimo call. Empty for an ordinary call; holds
+             the measured block(s) when function="update" ===== -->
+  <xs:element name="nimo">
+    <xs:complexType>
+      <xs:group ref="blocks"/>
+      <xs:attribute name="function" type="xs:string" use="required"/>
+      <xs:attribute name="minimization" type="xs:boolean" use="optional"/>
+      <xs:anyAttribute processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== repeat ===== -->
+  <xs:element name="repeat">
+    <xs:complexType>
+      <xs:group ref="blocks"/>
+      <xs:attribute name="counter" type="xs:string" use="optional"/>
+      <xs:attribute name="times" type="xs:nonNegativeInteger" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== if / then / else ===== -->
+  <xs:element name="if">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="then"/>
+        <xs:element ref="else" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="counter" type="xs:string" use="required"/>
+      <xs:attribute name="op" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="=="/>
+            <xs:enumeration value="&lt;"/>
+            <xs:enumeration value="&gt;"/>
+            <xs:enumeration value="&lt;="/>
+            <xs:enumeration value="&gt;="/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:attribute name="value" type="xs:integer" use="required"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="then">
+    <xs:complexType><xs:group ref="blocks"/></xs:complexType>
+  </xs:element>
+  <xs:element name="else">
+    <xs:complexType><xs:group ref="blocks"/></xs:complexType>
+  </xs:element>
+
+</xs:schema>

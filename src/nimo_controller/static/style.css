@@ -58,139 +58,11 @@ body {
 .logo { height: 32px; width: auto }
 .title-text { font-weight: 700; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 
-/* ===== Mode toggle ===== */
-.mode-toggle { display: flex; align-items: center; gap: 8px }
-.mode-toggle__label {
-  font-size: 12px; font-weight: 600; color: var(--muted);
-  cursor: pointer; user-select: none; transition: color .15s;
-}
-.mode-toggle__label.active { color: var(--text) }
-.mode-toggle__switch {
-  appearance: none; border: none; cursor: pointer;
-  width: 36px; height: 20px; border-radius: 10px;
-  background: rgba(120, 130, 140, .25); position: relative;
-  transition: background .15s; padding: 0;
-}
-.mode-toggle__switch.active { background: var(--accent) }
-.mode-toggle__knob {
-  position: absolute; top: 2px; left: 2px;
-  width: 16px; height: 16px; border-radius: 50%;
-  background: #fff; transition: left .15s;
-  box-shadow: 0 1px 2px rgba(0,0,0,.15);
-}
-.mode-toggle__switch.active .mode-toggle__knob { left: 18px }
-
 /* ===== Mode views ===== */
 .mode-view { display: none; flex: 1 1 auto; min-height: 0; overflow: hidden }
 .mode-view.active { display: flex; flex-direction: column }
 
-/* ===== Agent mode layout ===== */
-#agentMode.active {
-  flex-direction: row;
-  background: var(--surface);
-}
-
-/* Sidebar */
-.agent-sidebar {
-  flex: 0 0 200px;
-  display: flex; flex-direction: column;
-  padding: 16px 14px;
-  border-right: 1px solid var(--border);
-  background: var(--bg);
-  overflow-y: auto;
-  gap: 8px;
-}
-.agent-sidebar__title {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.05em; color: var(--muted); margin-bottom: 4px;
-}
-.agent-sidebar__list { display: flex; flex-direction: column; gap: 2px }
-.agent-sidebar__item {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px; border-radius: 6px;
-  font-size: 12px; color: var(--text);
-}
-.agent-sidebar__dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #22c55e; flex-shrink: 0;
-}
-
-/* Auto-approve toggle (pinned to sidebar bottom) */
-.agent-sidebar__spacer { flex: 1 1 auto; min-height: 8px }
-.agent-sidebar__section {
-  border-top: 1px solid var(--border);
-  padding-top: 12px; margin-top: 4px;
-}
-.auto-approve {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; cursor: pointer; padding: 4px 2px;
-}
-.auto-approve__text { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
-.auto-approve__name { font-size: 12px; font-weight: 600; color: var(--text) }
-.auto-approve__hint { font-size: 10.5px; color: var(--muted); line-height: 1.3 }
-
-/* Agent chat area */
-.agent-chat {
-  flex: 1 1 auto; display: flex; flex-direction: column;
-  max-width: 800px; width: 100%; margin: 0 auto;
-  min-height: 0; padding: 0 12px;
-}
-.agent-chat--centered {
-  justify-content: center;
-  align-items: center;
-}
-.agent-chat--centered .agent-chat__log { display: none }
-.agent-chat--centered .agent-chat__input {
-  border-top: none;
-  padding: 0;
-  width: 100%;
-  max-width: 560px;
-}
-.agent-chat--centered .agent-chat__input textarea {
-  height: 56px;
-  font-size: 15px;
-  border-radius: 14px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .08);
-}
-.agent-chat__log {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto;
-  padding: 16px 0; font-size: 13px; line-height: 1.55;
-}
-.agent-chat__input {
-  flex: 0 0 auto; display: flex; gap: 8px;
-  align-items: flex-end; padding: 12px 0;
-}
-.agent-chat__input textarea {
-  flex: 1; min-width: 0; height: 48px; max-height: 140px;
-  padding: 10px 12px; border-radius: 12px;
-  border: 1px solid var(--border); background: var(--surface);
-  color: var(--text); resize: vertical;
-  font-size: 13.5px; line-height: 1.4; outline: none;
-}
-
-/* ===== Thinking / waiting indicator (agent mode) ===== */
-.assistant-bubble.thinking {
-  display: inline-flex; align-items: center;
-  padding: 12px 14px; min-height: 0;
-}
-.thinking-dots { display: inline-flex; gap: 5px; align-items: center }
-.thinking-dots span {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--muted);
-  animation: thinking-blink 1.2s infinite ease-in-out both;
-}
-.thinking-dots span:nth-child(2) { animation-delay: .16s }
-.thinking-dots span:nth-child(3) { animation-delay: .32s }
-@keyframes thinking-blink {
-  0%, 80%, 100% { opacity: .25; transform: translateY(0) }
-  40% { opacity: 1; transform: translateY(-3px) }
-}
-
-/* ===== Tool approval buttons ===== */
-.tool-approval { margin-top: 10px; display: flex; gap: 8px; align-items: center }
-.tool-approval .btn { padding: 6px 10px; font-size: 12px }
-
-/* ===== History download ===== */
+/* ===== Results folder link ===== */
 .log-card__download {
   display: inline-block;
   margin-top: 8px;
@@ -199,8 +71,68 @@ body {
   color: var(--accent);
   text-decoration: none;
   cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
 }
 .log-card__download:hover { text-decoration: underline }
+
+/* Workflow XML revealed by the show/hide button. Scrolls rather than wraps,
+   so the indentation stays readable. */
+.log-card__xml {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, .06);
+  background: rgba(0, 0, 0, .03);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* Clickable folder path inside a log card (opens it in the file manager). */
+.log-card__path {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+  cursor: pointer;
+}
+.log-card__path:hover { color: var(--accent-hover) }
+.log-card__path:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px }
+
+/* Rendered markdown in an agent reply. The bubble sets the type size; these
+   only stop block elements from inheriting a browser's chunky default margins
+   and keep wide content (tables, code, formulas) inside the bubble. */
+.agent-msg__text > :first-child { margin-top: 0 }
+.agent-msg__text > :last-child { margin-bottom: 0 }
+.agent-msg__text p { margin: 0 0 8px }
+.agent-msg__text ul, .agent-msg__text ol { margin: 0 0 8px; padding-left: 22px }
+.agent-msg__text li { margin: 2px 0 }
+.agent-msg__text h1, .agent-msg__text h2, .agent-msg__text h3,
+.agent-msg__text h4 { margin: 12px 0 6px; font-size: 1.05em; line-height: 1.35 }
+.agent-msg__text code { font-family: var(--mono); font-size: .92em;
+  background: rgba(120, 130, 140, .14); padding: 1px 4px; border-radius: 4px }
+.agent-msg__text pre { background: rgba(120, 130, 140, .12); padding: 10px;
+  border-radius: 6px; overflow-x: auto; margin: 0 0 8px }
+.agent-msg__text pre code { background: none; padding: 0 }
+.agent-msg__text blockquote { margin: 0 0 8px; padding-left: 10px;
+  border-left: 3px solid rgba(120, 130, 140, .4); color: var(--muted) }
+.agent-msg__text table { border-collapse: collapse; margin: 0 0 8px; font-size: .95em }
+.agent-msg__text th, .agent-msg__text td {
+  border: 1px solid rgba(120, 130, 140, .35); padding: 4px 8px }
+.agent-msg__text a { color: var(--accent); text-decoration: underline }
+.agent-msg__text img { max-width: 100% }
+/* Display formulas can be wider than the bubble; scroll rather than spill. */
+.agent-msg__text .katex-display { overflow-x: auto; overflow-y: hidden;
+  margin: 8px 0; padding-bottom: 2px }
 
 /* ===== Layout ===== */
 #container {
@@ -244,9 +176,6 @@ body {
 
 /* Workspace lock — blocks interaction during workflow execution */
 #workspace.workspace-locked { pointer-events: none }
-
-/* Chat input disabled during workflow execution */
-#chatBox.chat-disabled { pointer-events: none; opacity: .5 }
 
 /* ===== Blockly header ===== */
 #blocklyHeader {
@@ -299,6 +228,40 @@ body {
 
 #logWrap { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0 }
 
+/* Layout-transparent: it takes the flex space #logWrap hands out and passes it
+   straight through, so #log's own flex rules still decide the size. It exists
+   only to be the positioning context for .log-jump — anchored to #logWrap
+   instead, the button would sit over the agent prompt rather than over the
+   bottom of the log. */
+#logScrollWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Shown only while the log is scrolled away from the bottom, so a run that
+   keeps producing entries does not look like it has stalled. */
+.log-jump {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, .14);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .14);
+}
+.log-jump:hover { background: rgba(120, 130, 140, .12) }
+.log-jump[hidden] { display: none }
+
 #log {
   flex: 1 1 auto;
   min-height: 0;
@@ -320,66 +283,224 @@ body {
 .chat-placeholder { opacity: .6; font-size: 12px }
 .chat-status { font-size: 12px; opacity: .7; padding: 0 6px; display: none }
 
+/* ===== Agent prompt (shown only when enable_agent is set) ===== */
+.agent-prompt {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface2) 70%, transparent);
+}
+/* display:flex would override the UA [hidden] rule — restore it explicitly. */
+.agent-prompt[hidden] { display: none }
+.agent-prompt__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-prompt__provider { font-family: var(--mono) }
+.agent-field { display: flex; align-items: center; gap: 4px }
+.agent-select {
+  max-width: 200px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.agent-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, .15) }
+.agent-select:disabled { opacity: .45; cursor: default }
+.agent-field:has(.agent-select:disabled) { opacity: .6 }
+
+/* Auto mode switch — a checkbox drawn as a sliding toggle, pushed to the
+   far end of the row so it reads as a mode rather than another picker. */
+.agent-toggle { cursor: pointer; user-select: none; gap: 6px; margin-left: auto }
+.agent-toggle__input { position: absolute; opacity: 0; width: 0; height: 0 }
+.agent-toggle__track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background .15s;
+}
+.agent-toggle__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  transition: transform .15s;
+}
+.agent-toggle__input:checked + .agent-toggle__track { background: var(--accent) }
+.agent-toggle__input:checked + .agent-toggle__track .agent-toggle__thumb { transform: translateX(12px) }
+.agent-toggle__input:focus-visible + .agent-toggle__track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.agent-toggle:has(.agent-toggle__input:disabled) { opacity: .6; cursor: default }
+
+/* Approval bar inside an agent tool card. */
+.tool-card__approval {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.tool-card__approval-note { color: var(--muted) }
+.agent-prompt__row { display: flex; gap: 8px; align-items: flex-end }
+.agent-prompt__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  max-height: 120px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.agent-prompt__input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, .15) }
+#agentSendBtn { flex-shrink: 0 }
+
+/* Both sides share one card style — the pill and the side they sit on are
+   what tell them apart. */
+.agent-user-msg,
+.agent-assistant-msg {
+  min-width: 160px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* Sized to its content — a sent message never changes length. */
+.agent-user-msg { max-width: 85% }
+/* Full width up front, like .tool-card: sizing to content would make the card
+   creep wider line by line as the reply streams in. */
+.agent-assistant-msg { width: 100% }
+.agent-msg__head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px }
+.agent-msg__badge {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  line-height: 1.4;
+}
+/* Same pill, light blue — matches the tool-card badge default. */
+.agent-msg__badge--user { background: #5b9bd5 }
+.agent-msg__toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.agent-msg__toggle:hover { color: var(--text) }
+.agent-msg__toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px }
+.agent-msg__thinking {
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Two states, two whitespace rules.
+
+   Unrendered, the text is the model's own output and pre-wrap is what keeps its
+   line breaks: that covers streaming, before the markdown libraries have
+   answered, and the permanent fallback when they never load.
+
+   Rendered, the same rule works against us. marked puts a newline between every
+   block element, and under pre-wrap each of those draws a visible blank line on
+   top of the paragraph margin — so .agent-msg__text--md turns it back to
+   normal, and the markup alone decides the spacing. */
+.agent-msg__text { white-space: pre-wrap; word-break: break-word }
+.agent-msg__text--md { white-space: normal }
+/* Blinking caret while waiting for the first answer token. */
+.agent-msg__text:empty::after {
+  content: "▍";
+  opacity: .45;
+  animation: agent-caret 1s steps(2, start) infinite;
+}
+@keyframes agent-caret { to { opacity: .05 } }
+/* Says why the caret has been blinking for a while. Deliberately quiet — it
+   is an explanation of a wait, not a result, and it disappears on the first
+   token either way. */
+.agent-msg__waiting {
+  margin: 2px 0 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--muted);
+}
+/* Model name and time, tucked into the top-right corner of the head row. */
+.agent-msg__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  opacity: .75;
+}
+.agent-msg__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-msg__model:empty { display: none }
+.agent-msg__time { flex-shrink: 0 }
+
 /* ===== Chat rows ===== */
 .chat-row { display: flex; margin: 6px 0 }
 .chat-row.user { justify-content: flex-end }
 .chat-row.system { justify-content: flex-start }
 
-.user-bubble, .assistant-bubble {
-  max-width: 78%;
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(0, 0, 0, .08);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.user-bubble { background: rgba(0, 128, 255, .10) }
-.assistant-bubble { background: rgba(0, 0, 0, .02) }
-
-/* ===== Rendered markdown (assistant bubbles) ===== */
-.assistant-bubble.markdown { white-space: normal }
-.assistant-bubble.markdown > :first-child { margin-top: 0 }
-.assistant-bubble.markdown > :last-child { margin-bottom: 0 }
-.assistant-bubble.markdown p { margin: 0 0 8px }
-.assistant-bubble.markdown ul,
-.assistant-bubble.markdown ol { margin: 4px 0 8px; padding-left: 22px }
-.assistant-bubble.markdown li { margin: 2px 0 }
-.assistant-bubble.markdown li > ul,
-.assistant-bubble.markdown li > ol { margin: 2px 0 }
-.assistant-bubble.markdown h1,
-.assistant-bubble.markdown h2,
-.assistant-bubble.markdown h3,
-.assistant-bubble.markdown h4 { margin: 12px 0 6px; line-height: 1.3; font-weight: 700 }
-.assistant-bubble.markdown h1 { font-size: 1.4em }
-.assistant-bubble.markdown h2 { font-size: 1.25em }
-.assistant-bubble.markdown h3 { font-size: 1.1em }
-.assistant-bubble.markdown h4 { font-size: 1em }
-.assistant-bubble.markdown code {
-  font-family: var(--mono); font-size: .9em;
-  background: rgba(120, 130, 140, .16);
-  padding: 1px 5px; border-radius: 5px;
-}
-.assistant-bubble.markdown pre {
-  background: rgba(120, 130, 140, .12);
-  border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 12px;
-  margin: 6px 0 8px; overflow-x: auto;
-}
-.assistant-bubble.markdown pre code { background: none; padding: 0; font-size: .88em }
-.assistant-bubble.markdown blockquote {
-  margin: 6px 0; padding: 2px 12px;
-  border-left: 3px solid var(--border); color: var(--muted);
-}
-.assistant-bubble.markdown a { color: var(--accent); text-decoration: underline }
-.assistant-bubble.markdown hr { border: none; border-top: 1px solid var(--border); margin: 10px 0 }
-.assistant-bubble.markdown table { border-collapse: collapse; margin: 6px 0; font-size: .95em }
-.assistant-bubble.markdown th,
-.assistant-bubble.markdown td { border: 1px solid var(--border); padding: 4px 8px }
-.assistant-bubble.markdown th { background: rgba(120, 130, 140, .12); font-weight: 700 }
-/* Let wide display-math scroll instead of overflowing the bubble. */
-.assistant-bubble.markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0 }
 
 .system-log {
   width: 100%;
@@ -402,6 +523,28 @@ body {
   line-height: 1.5;
 }
 .tool-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap }
+/* Server name and time, paired off in the corner — same treatment as the model
+   name and time on an agent bubble. One auto margin on the pair, so the two
+   stay together instead of splitting the free space between them. */
+.tool-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  opacity: .75;
+}
+/* Which MCP server answered — plain text, so the tool name still leads. */
+.tool-server {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-time { flex-shrink: 0 }
 .tool-badge {
   font-family: var(--sans);
   font-size: 11px;
@@ -413,6 +556,19 @@ body {
   line-height: 1.3;
 }
 .tool-section-label { margin-top: 8px; opacity: 0.55; font-size: 11px }
+/* Why this call did something other than what was asked (e.g. an algorithm
+   swapped out). Marked apart from the values so it is not read as data. */
+.tool-note {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-left: 2px solid #d97706;
+  border-radius: 4px;
+  background: rgba(217, 119, 6, .10);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+}
 .tool-pre {
   margin: 4px 0 0;
   padding: 6px 10px;
@@ -535,6 +691,10 @@ body {
 }
 .btn:hover { background: rgba(120, 130, 140, .12); border-color: rgba(120, 130, 140, .35) }
 .btn:active { transform: translateY(1px) }
+/* A button locked while its work is in flight — no hover, no press. */
+.btn:disabled { opacity: .5; cursor: not-allowed }
+.btn:disabled:hover { background: var(--surface); border-color: rgba(0, 0, 0, .14) }
+.btn:disabled:active { transform: none }
 .btn-primary { background: var(--accent); color: #fff; border-color: rgba(0, 0, 0, .12) }
 .btn-primary:hover { background: var(--accent-hover) }
 #runBtn.btn-primary { background: #22c55e; border-color: #16a34a }
@@ -548,33 +708,6 @@ body {
 /* ===== History download ===== */
 .history-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center }
 .history-actions a { text-decoration: none }
-
-/* ===== Chat input (inside left panel) ===== */
-#chatBox {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface2) 70%, transparent);
-}
-#chatInput {
-  flex: 1;
-  min-width: 0;
-  height: 40px;
-  max-height: 100px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  resize: vertical;
-  font-size: 13px;
-  line-height: 1.4;
-  outline: none;
-  overflow-x: hidden;
-}
 
 /* ===== Settings panel ===== */
 .settings-body { padding: 16px }
@@ -610,6 +743,16 @@ body {
   flex-shrink: 0;
 }
 .settings-delete-btn { font-size: 12px; padding: 4px 10px !important; white-space: nowrap; flex-shrink: 0 }
+/* Emoji action buttons (reconnect / delete) in the server list */
+.settings-emoji-btn {
+  font-size: 16px; line-height: 1;
+  padding: 4px 8px !important;
+  background: none; border: none; border-radius: 6px;
+  flex-shrink: 0; cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.settings-emoji-btn:hover { background: rgba(120, 130, 140, .15) }
+.settings-emoji-btn:active { transform: scale(0.9) }
 .settings-add-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap }
 .settings-input {
   padding: 7px 10px;
@@ -623,6 +766,19 @@ body {
 }
 .settings-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, .15) }
 .settings-input-wide { flex: 1; min-width: 160px }
+/* MCP URL typeahead */
+.settings-url-wrap { position: relative; flex: 1; min-width: 160px }
+.settings-url-wrap .settings-input { width: 100%; box-sizing: border-box }
+.url-suggest {
+  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 20;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .12); max-height: 200px; overflow-y: auto;
+}
+.url-suggest__item {
+  padding: 6px 10px; font-family: var(--mono); font-size: 12px;
+  color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.url-suggest__item.active, .url-suggest__item:hover { background: rgba(120, 130, 140, .15) }
 .settings-error { font-size: 12px; color: #dc2626; min-height: 1em }
 .settings-loading, .settings-empty { font-size: 13px; color: #9ca3af; padding: 8px 0 }
 .settings-hint {
@@ -632,6 +788,111 @@ body {
   font-family: var(--mono); font-size: 11px;
   background: rgba(0, 0, 0, .06); padding: 1px 5px; border-radius: 3px;
 }
+
+/* Candidates file dialog */
+.candidates-folder { display: flex; flex-direction: column; gap: 4px }
+.candidates-dir { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--muted) }
+.candidates-dir-label { font-weight: 600 }
+.candidates-dir-link {
+  font-family: var(--mono); word-break: break-all;
+  color: var(--accent); text-decoration: underline; cursor: pointer;
+}
+.candidates-dir-link:hover { color: var(--accent-hover) }
+.candidates-dir-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px }
+.candidates-subtitle {
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.candidates-hint { font-size: 11px; color: var(--muted) }
+.candidates-hint code {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(0, 0, 0, .06); padding: 1px 5px; border-radius: 3px;
+}
+.candidates-status { font-size: 13px; color: var(--muted); word-break: break-word }
+.candidates-preview {
+  max-height: 260px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface2);
+}
+.candidates-table {
+  border-collapse: collapse; font-family: var(--mono); font-size: 12px;
+  width: max-content; min-width: 100%;
+}
+.candidates-table th, .candidates-table td {
+  border: 1px solid var(--border); padding: 4px 8px; text-align: right; white-space: nowrap;
+}
+.candidates-table th {
+  position: sticky; top: 0; background: var(--surface);
+  font-weight: 700; color: var(--text);
+}
+.candidates-table td { color: var(--text) }
+
+/* ===== Workflow run group =====
+   Holds one run's whole output. A ten-cycle loop otherwise leaves forty-odd
+   cards loose in the log; folded, the run is a single summary line. */
+.run-group {
+  width: 100%;
+  border: 1px solid rgba(0, 0, 0, .10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .45);
+  overflow: hidden;
+}
+.run-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.run-group__head:hover { background: rgba(120, 130, 140, .10) }
+.run-group__head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+/* Points down when open, right when folded. */
+.run-group__caret::before {
+  content: "▾";
+  display: inline-block;
+  opacity: .6;
+  transition: transform .12s;
+}
+.run-group--collapsed .run-group__caret::before { transform: rotate(-90deg) }
+
+/* Rail and body sit side by side, which makes the rail exactly as tall as the
+   content it folds. That is what lets a long run be collapsed from anywhere
+   inside it; makeRunGroup in frontend.js says why that matters. */
+.run-group__main { display: flex; align-items: stretch }
+.run-group__rail {
+  flex: 0 0 auto;
+  width: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  position: relative;
+}
+/* The visible guide line, inset inside the wider hit area. */
+.run-group__rail::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 6px;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: rgba(120, 130, 140, .30);
+  transition: background .12s, width .12s;
+}
+.run-group__rail:hover::before { background: var(--accent); width: 3px }
+.run-group__rail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.run-group__body { flex: 1 1 auto; min-width: 0; padding: 0 10px 6px 2px }
+/* Hides the rail along with the body — a rail with nothing to fold is a stub. */
+.run-group--collapsed .run-group__main { display: none }
 
 /* ===== Log cards ===== */
 .log-card {
@@ -647,7 +908,7 @@ body {
 .log-card--warn    { border-color: rgba(217, 119, 6,  .25); background: rgba(254, 243, 199, .40) }
 .log-card--info    { border-color: rgba(59,  130, 246, .25); background: rgba(219, 234, 254, .40) }
 .log-card--success { border-color: rgba(22,  163, 74,  .25); background: rgba(220, 252, 231, .40) }
-.log-card--loop    { border-color: rgba(22,  163, 74,  .20); background: rgba(220, 252, 231, .25) }
+.log-card--repeat    { border-color: rgba(22,  163, 74,  .20); background: rgba(220, 252, 231, .25) }
 .log-card--if      { border-color: rgba(234, 138, 25,  .20); background: rgba(255, 237, 213, .25) }
 
 .log-card__head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px }
@@ -664,7 +925,7 @@ body {
 .log-card__badge--warn    { background: #d97706; color: #fff }
 .log-card__badge--info    { background: #3b82f6; color: #fff }
 .log-card__badge--success { background: #16a34a; color: #fff }
-.log-card__badge--loop    { background: #22c55e; color: #fff }
+.log-card__badge--repeat    { background: #22c55e; color: #fff }
 .log-card__badge--if      { background: #f59e0b; color: #fff }
 
 .log-card__suffix {
@@ -684,7 +945,7 @@ body {
 .log-card--warn  .log-card__body   { color: #92400e }
 .log-card--info  .log-card__body   { color: #1e40af }
 .log-card--success .log-card__body { color: #166534 }
-.log-card--loop  .log-card__body   { color: #166534 }
+.log-card--repeat  .log-card__body   { color: #166534 }
 .log-card--if    .log-card__body   { color: #9a4e00 }
 
 .log-card__code {
@@ -727,13 +988,13 @@ body {
   .log-card--warn    { border-color: rgba(251, 191, 36,  .25); background: rgba(120, 53, 15, .15) }
   .log-card--info    { border-color: rgba(96,  165, 250, .25); background: rgba(30, 58, 138, .15) }
   .log-card--success { border-color: rgba(74,  222, 128, .25); background: rgba(20, 83, 45, .15) }
-  .log-card--loop    { border-color: rgba(74,  222, 128, .20); background: rgba(20, 83, 45, .10) }
+  .log-card--repeat    { border-color: rgba(74,  222, 128, .20); background: rgba(20, 83, 45, .10) }
   .log-card--if      { border-color: rgba(251, 191, 36,  .20); background: rgba(120, 53, 15, .10) }
   .log-card--error .log-card__body   { color: #fca5a5 }
   .log-card--warn  .log-card__body   { color: #fcd34d }
   .log-card--info  .log-card__body   { color: #93c5fd }
   .log-card--success .log-card__body { color: #86efac }
-  .log-card--loop  .log-card__body   { color: #86efac }
+  .log-card--repeat  .log-card__body   { color: #86efac }
   .log-card--if    .log-card__body   { color: #fcd34d }
   .log-card__code { background: #2a2a2a; border-color: #3a3a3a; color: #9ca3af }
   .log-card__result--true  { background: #22c55e }

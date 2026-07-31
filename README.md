@@ -55,6 +55,15 @@ Press the `Run` button to execute the workflow.
 
 Note that the target is the *negated* Ackley function, since PHYSBO performs maximization.
 
+The same example is also provided written against the official MCP SDK, using plain decorated functions rather than an SDL class:
+
+```
+cd example_mcp/ackley
+uv run mcp_ackley_sdk.py
+```
+
+It serves the same tool on the same port and uses the same candidates file, so the workflow above is unchanged — run one server or the other.
+
 ### Phase diagram construction
 
 The `example_mcp/phase_diagram` directory contains an example MCP server that demonstrates the PDC algorithm by constructing a phase diagram for the fictional material X described in the [IvoryOS integration guide](https://nims-da.github.io/nimo/en/ivoryos.html).
@@ -84,15 +93,14 @@ Configuration is loaded from the following sources, in order of precedence:
 Example `config.yaml`:
 
 ```yaml
-model: "gpt-4o-mini"
 port: 8888
-
-# Optional: route requests to an OpenAI-compatible local endpoint (e.g. Ollama).
-# openai_base_url: "http://127.0.0.1:11434/v1"
-# openai_api_key: "ollama"
 
 mcp_servers:
   sdl: "http://127.0.0.1:8001/mcp"
+
+# Optional: where candidates.csv and results/ are stored.
+# Defaults to ~/.nimo-controller if omitted.
+# data_dir: "~/my-nimo-data"
 ```
 
-Runtime data, including the uploaded `candidates.csv` and optimization results, is written to `<user-data-dir>/nimo-controller/` (for example, `~/.local/share/nimo-controller/`).
+Runtime data — the uploaded `candidates.csv` and the optimization `results/` — is written to `~/.nimo-controller/` by default, regardless of where you launch the app from. You can change this by setting `data_dir` in `config.yaml`. The exact location is also shown in the UI when you click **Upload candidates file**.

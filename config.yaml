@@ -1,16 +1,16 @@
-# LLM model
-model: "gpt-oss:20b"
-
-# Optional: OpenAI-compatible endpoint (e.g. Ollama).
-# Uncomment and set `model` above to a local model name (e.g. "gemma3").
-openai_base_url: "http://127.0.0.1:11434/v1"
-openai_api_key: "ollama"
-
-
-# MCP servers
-mcp_servers:
-  sdl: "http://127.0.0.1:8001/mcp"
- 
 # Server port
 port: 8888
-nimo_mcp_port: 8008
+
+# Data directory for candidates.csv and results/ (default: ~/.nimo-controller)
+# data_dir: "~/my-nimo-data"
+
+# mcp_servers:
+#   sdl: "http://127.0.0.1:8001/mcp"
+
+# Agent mode: show a prompt box under the execution log (experimental)
+# enable_agent: true
+
+# Agent settings — provider: "openai" | "ollama"
+# agent:
+#   provider: ollama
+#   base_url: "http://127.0.0.1:11434/v1"

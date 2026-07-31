@@ -1,6 +1,5 @@
 from fastmcp import FastMCP
 
-
 class SampleSDL:
     def __init__(self):
         # 相図パラメータの定義
@@ -24,9 +23,20 @@ class SampleSDL:
                 return 1
 
 
+# Get Git commit hash
+import os
+import subprocess
+
+def git_hash_short() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        stderr=subprocess.DEVNULL,
+    ).decode("ascii").strip()
+
 sdl = SampleSDL()
 
-mcp = FastMCP("Self-driving laboratory controller")
+mcp = FastMCP(version=f"0.0.1+{git_hash_short()}")
 mcp.tool(sdl.get_phase)
 
 if __name__ == "__main__":

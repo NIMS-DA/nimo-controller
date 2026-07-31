@@ -6,11 +6,14 @@
   <title>NIMO Controller</title>
   <script src="/static/blockly/blockly.min.js"></script>
 
-  <!-- Markdown + math rendering (CDN). Deferred so they load before frontend.js. -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
-  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <!-- Markdown + math for the agent's replies. From a CDN for now, so this part
+       of the UI needs the network; frontend.js falls back to plain text when a
+       script fails to load, which is also what happens offline. -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
 
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -23,13 +26,6 @@
         <img src="/static/nimo_logo.png" class="logo" alt="NIMO Logo">
         <span class="title-text">NIMO Controller</span>
       </div>
-      <div class="mode-toggle">
-        <span class="mode-toggle__label" data-mode="blockly">Blockly</span>
-        <button id="modeToggle" class="mode-toggle__switch" type="button" title="Switch mode">
-          <span class="mode-toggle__knob"></span>
-        </button>
-        <span class="mode-toggle__label" data-mode="agent">Agent</span>
-      </div>
     </div>
 
     <!-- Blockly mode -->
@@ -39,64 +35,65 @@
           <div id="blocklyHeader">
             <div class="blockly-header-left">
               <div class="blockly-title">Workflow</div>
-              <button class="btn-add-tools" id="addToolsBtn" type="button">+ Add server</button>
+              <button class="btn-add-tools" id="addToolsBtn" type="button">Manage MCP servers</button>
               <button class="btn-add-tools" id="uploadCsvBtn" type="button">Upload candidates file</button>
               <input type="file" id="csvFileInput" accept=".csv" hidden />
             </div>
             <button class="btn btn-primary" id="runBtn" type="button">▶ Run</button>
           </div>
           <div id="workspace"></div>
-          <div id="chatBox">
-            <textarea id="chatInput" placeholder="Describe a workflow to generate blocks..."></textarea>
-            <button class="btn btn-primary" id="chatSend" type="button">Send</button>
-          </div>
         </div>
         <div id="resizeHandle"></div>
         <div class="card" id="sidepanel">
           <div id="logHeader" class="log-header">
-            <div class="log-header__title">Execution log</div>
+            <div class="log-header__title">Log</div>
             <div class="log-header__controls">
-              <button class="btn btn-ghost" type="button" id="clearLogBtn">Clear</button>
+              <button class="btn btn-ghost" type="button" id="reportBtn"
+                      title="Summarise this session as a report and open it">Generate report</button>
+              <button class="btn btn-ghost" type="button" id="newSessionBtn"
+                      title="Start a new results folder and clear the log">New session</button>
             </div>
           </div>
           <div id="logWrap">
-            <div id="log" class="log-placeholder">
-              <div class="chat-placeholder">Logs appear here…</div>
+            <!-- Wrapper exists only to anchor the floating jump button to the
+                 log's own bottom edge, not the panel's. -->
+            <div id="logScrollWrap">
+              <div id="log" class="log-placeholder">
+                <div class="chat-placeholder">Logs appear here…</div>
+              </div>
+              <button id="logJumpLatest" class="log-jump" type="button" hidden
+                      title="Scroll to the newest entry">↓ Latest</button>
             </div>
             <div id="logStatus" class="chat-status"></div>
+            <div id="agentPrompt" class="agent-prompt" hidden>
+              <div id="agentPromptMeta" class="agent-prompt__meta">
+                <span id="agentProviderLabel" class="agent-prompt__provider"></span>
+                <label class="agent-field">Model
+                  <select id="agentModelSelect" class="agent-select"></select>
+                </label>
+                <label class="agent-field">Thinking
+                  <select id="agentLevelSelect" class="agent-select">
+                    <option value="off">off</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium" selected>medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                  </select>
+                </label>
+                <label class="agent-field agent-toggle" title="Run tool calls without asking first">
+                  <input type="checkbox" id="agentAutoToggle" class="agent-toggle__input" checked>
+                  <span class="agent-toggle__track"><span class="agent-toggle__thumb"></span></span>
+                  Auto mode
+                </label>
+              </div>
+              <div class="agent-prompt__row">
+                <textarea id="agentPromptInput" class="agent-prompt__input" rows="2"
+                          placeholder="Ask the agent…  (Enter to send, Shift+Enter for newline)"></textarea>
+                <button class="btn btn-primary btn-sm" type="button" id="agentSendBtn">Send</button>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Agent mode -->
-    <div id="agentMode" class="mode-view">
-      <div class="agent-sidebar">
-        <div class="agent-sidebar__title">MCP Servers</div>
-        <div id="agentServerList" class="agent-sidebar__list"></div>
-        <button class="btn-add-tools" id="agentAddServerBtn" type="button">+ Add Server</button>
-
-        <div class="agent-sidebar__spacer"></div>
-
-        <div class="agent-sidebar__section">
-          <div class="agent-sidebar__title">Tool execution</div>
-          <div class="auto-approve" id="autoApproveRow" role="switch"
-               aria-checked="false" tabindex="0" title="Toggle auto-approve">
-            <span class="auto-approve__text">
-              <span class="auto-approve__name">Auto-approve</span>
-              <span class="auto-approve__hint">Run tools without asking</span>
-            </span>
-            <span id="autoApproveToggle" class="mode-toggle__switch" aria-hidden="true">
-              <span class="mode-toggle__knob"></span>
-            </span>
-          </div>
-        </div>
-      </div>
-      <div id="agentChat" class="agent-chat agent-chat--centered">
-        <div id="agentLog" class="agent-chat__log"></div>
-        <div class="agent-chat__input">
-          <textarea id="agentInput" placeholder="Ask the agent to perform tasks..."></textarea>
-          <button class="btn btn-primary" id="agentSend" type="button">Send</button>
         </div>
       </div>
     </div>
@@ -105,10 +102,21 @@
     <div id="settingsOverlay" class="settings-overlay">
       <div class="settings-modal">
         <div class="settings-modal__header">
-          <span class="settings-modal__title">Settings</span>
+          <span class="settings-modal__title">MCP servers</span>
           <button id="settingsCloseBtn" class="settings-modal__close">&times;</button>
         </div>
         <div id="settingsPanel" class="settings-modal__body"></div>
+      </div>
+    </div>
+
+    <!-- Candidates file overlay -->
+    <div id="candidatesOverlay" class="settings-overlay">
+      <div class="settings-modal">
+        <div class="settings-modal__header">
+          <span class="settings-modal__title">Candidates file</span>
+          <button id="candidatesCloseBtn" class="settings-modal__close">&times;</button>
+        </div>
+        <div id="candidatesPanel" class="settings-modal__body"></div>
       </div>
     </div>
   </div>
