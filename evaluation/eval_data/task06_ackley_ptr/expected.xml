@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<nimo-workflow version="0.0.4">
+<nimo-workflow version="0.1.0">
   <servers>
     <server name="ackley">
       <tool name="ackley_function" params="{x1: float, x2: float}"/>

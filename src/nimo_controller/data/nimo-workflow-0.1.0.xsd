@@ -1,48 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Schema for the NIMO Controller workflow log XML (format version 0.0.3).
+  Schema for the NIMO Controller workflow XML (format version 0.1.0).
   Reference/specification only — the app does not load this at runtime.
 
-  Root <nimo-workflow> has four sections:
-    <controller>  what produced the run: this app, nimo, and Python
-    <servers>     the MCP servers this run was connected to, with versions
+  The document is written by _workflow_xml() in server.py, and mirrored by
+  to_nimo_workflow_xml() in evaluation/generate_xml.py, which feeds the same
+  format from the planner's Workflow model rather than from live app state.
+
+  Root <nimo-workflow> has three sections:
+    <servers>     the MCP servers this run was connected to, with the tools
+                  each of them offered
     <candidates>  the candidates snapshot this run started from (file name +
                   SHA-256), plus its parameter and objective columns
     <workflow>    the procedure: a sequence of statement blocks
 
-  Changes from 0.0.2:
-    - <controller> was added, as the first child of the root. <servers> already
-      recorded which build of each instrument server answered the calls; this
-      records which build made them, and which nimo chose the proposals. Its
-      attributes are all optional: a version that cannot be read is left out
-      rather than written as an empty string, so an absent attribute means
-      "unknown" and a present one is always a real answer.
-    - <nimo> was added. nimo runs in-process as direct Python calls, so it is
-      not a server under <servers> that a @server attribute could point at.
-      Its calls therefore get their own element instead of being <tool
-      server="nimo">, which keeps the procedure and the server list telling the
-      same story. @function names the call; arguments are attributes, as for
-      <tool>.
-    - The two directional selections are recorded as what they actually are:
-      maximization and minimization is one nimo selection call plus a
-      direction, so both serialize as function="selection" with
-      @minimization="true"/"false". The direction-less algorithms omit the
-      attribute, which is also what is passed down to nimo.
-    - <update> was removed. An update block is a nimo call that happens to
-      wrap other blocks, so it is <nimo function="update"> with those blocks
-      inside — one element for nimo instead of two spellings for one idea.
+  Changes from 0.0.3 (0.0.4 is the same content model under the older name, so
+  documents written then are valid here unchanged):
+    - A call no longer names its server in the tag. nimo's built-ins are
+      <nimo tool="..."/> and an MCP server's tools are
+      <call server="..." tool="..."/>. The old <tool server=.. name=..> is
+      gone, and so is 0.0.3's <nimo function=..>: one attribute name, "tool",
+      now spells the same idea in both elements.
+    - <tool> was reused for the other half of the story: under <server> it
+      declares a tool the server offered, with an optional compact signature
+      in @params (e.g. params="{x1: float, x2: float}"). It never appears
+      inside <workflow>.
+    - <controller> was dropped. What produced the run belongs to the run, not
+      to the workflow being described, and the same document is now rendered
+      for a workspace that has not been run at all.
+    - <server> lost @url for the same reason: where a server was reached is a
+      property of the run.
+    - nimo is still not listed under <servers>. It runs in-process as direct
+      Python calls, and which built-ins exist is implied by @version on the
+      root.
+    - The update block keeps 0.0.3's shape, spelled with the common attribute:
+      <nimo tool="update"> wrapping the measured call(s).
 
   Notes:
-    - <tool> and <nimo> argument attributes are open (xs:anyAttribute). Their
+    - <call> and <nimo> argument attributes are open (xs:anyAttribute). Their
       values may be literals or references written as "proposal.<var>" /
       "counter.<var>"; that convention is enforced by the serializer, not here.
-      In XSD 1.0 anyAttribute cannot override a declared attribute, so a tool
-      argument named "server"/"name" (on <tool>) or "function"/"minimization"
-      (on <nimo>) would collide with the declarations below. No such argument
+      In XSD 1.0 anyAttribute cannot override a declared attribute, so an
+      argument named "server"/"tool" (on <call>) or "tool"/"minimization" (on
+      <nimo>) would collide with the declarations below. No such argument
       exists in the shipped tools.
+    - @minimization on <nimo> is the direction of a directional call. The
+      selection tool takes it as an ordinary argument and needs no declaration
+      of its own; plot_history_best spells its direction as a mode argument,
+      which the serializer rewrites to this same flag. The direction-less
+      algorithms omit it, which is also what is passed down to nimo.
     - <then>/<else> content is sometimes written inline on one line when the
       branch holds a single call. That is formatting only; the content model is
       the same as a multi-line branch.
+    - @version on the root is a plain string rather than a fixed value, so a
+      document's structure can be checked here independently of the format
+      version it declares.
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
 
@@ -50,7 +62,6 @@
   <xs:element name="nimo-workflow">
     <xs:complexType>
       <xs:sequence>
-        <xs:element ref="controller" minOccurs="0"/>
         <xs:element ref="servers"/>
         <xs:element ref="candidates"/>
         <xs:element ref="workflow"/>
@@ -59,16 +70,8 @@
     </xs:complexType>
   </xs:element>
 
-  <!-- ===== Controller (provenance of the run itself) ===== -->
-  <xs:element name="controller">
-    <xs:complexType>
-      <xs:attribute name="version" type="xs:string" use="optional"/>
-      <xs:attribute name="nimo" type="xs:string" use="optional"/>
-      <xs:attribute name="python" type="xs:string" use="optional"/>
-    </xs:complexType>
-  </xs:element>
-
-  <!-- ===== Servers ===== -->
+  <!-- ===== Servers: the MCP servers, and what each one offered =====
+       A server that offered no tools is written as an empty element. -->
   <xs:element name="servers">
     <xs:complexType>
       <xs:sequence>
@@ -78,13 +81,31 @@
   </xs:element>
   <xs:element name="server">
     <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="tool" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
       <xs:attribute name="name" type="xs:string" use="required"/>
-      <xs:attribute name="url" type="xs:anyURI" use="optional"/>
+      <!-- Full serverInfo.version. A git commit is carried inside this single
+           version string as semver build metadata (e.g. "1.2.3+abc1234"). -->
       <xs:attribute name="version" type="xs:string" use="optional"/>
     </xs:complexType>
   </xs:element>
 
-  <!-- ===== Candidates ===== -->
+  <!-- ===== tool: one tool a server offered (a declaration, not a call) =====
+       @params is the compact signature "{name: type, ...}", omitted when the
+       tool takes no arguments. -->
+  <xs:element name="tool">
+    <xs:complexType>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+      <xs:attribute name="params" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ===== Candidates =====
+       @snapshot and @sha256 describe the same frozen file: the copy taken when
+       the run started, not the working candidates.csv, which has been
+       rewritten by the time the log is rendered. Neither is emitted without a
+       snapshot, since a hash whose file is unknown says nothing. -->
   <xs:element name="candidates">
     <xs:complexType>
       <xs:sequence>
@@ -120,7 +141,7 @@
   <xs:group name="blocks">
     <xs:sequence>
       <xs:choice minOccurs="0" maxOccurs="unbounded">
-        <xs:element ref="tool"/>
+        <xs:element ref="call"/>
         <xs:element ref="nimo"/>
         <xs:element ref="repeat"/>
         <xs:element ref="if"/>
@@ -128,22 +149,22 @@
     </xs:sequence>
   </xs:group>
 
-  <!-- ===== tool: an MCP server's tool. server/name required, plus arbitrary
+  <!-- ===== call: an MCP server's tool. server/tool required, plus arbitrary
              argument attributes ===== -->
-  <xs:element name="tool">
+  <xs:element name="call">
     <xs:complexType>
       <xs:attribute name="server" type="xs:string" use="required"/>
-      <xs:attribute name="name" type="xs:string" use="required"/>
+      <xs:attribute name="tool" type="xs:string" use="required"/>
       <xs:anyAttribute processContents="skip"/>
     </xs:complexType>
   </xs:element>
 
   <!-- ===== nimo: an in-process nimo call. Empty for an ordinary call; holds
-             the measured block(s) when function="update" ===== -->
+             the measured block(s) when tool="update" ===== -->
   <xs:element name="nimo">
     <xs:complexType>
       <xs:group ref="blocks"/>
-      <xs:attribute name="function" type="xs:string" use="required"/>
+      <xs:attribute name="tool" type="xs:string" use="required"/>
       <xs:attribute name="minimization" type="xs:boolean" use="optional"/>
       <xs:anyAttribute processContents="skip"/>
     </xs:complexType>
@@ -158,7 +179,9 @@
     </xs:complexType>
   </xs:element>
 
-  <!-- ===== if / then / else ===== -->
+  <!-- ===== if / then / else =====
+       The only condition available: a loop counter against an integer. The
+       counter is 0-based, so "the first 5 rounds" is counter &lt; 5. -->
   <xs:element name="if">
     <xs:complexType>
       <xs:sequence>

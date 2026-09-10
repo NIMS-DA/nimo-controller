@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<nimo-workflow version="0.0.4">
+<nimo-workflow version="0.1.0">
   <servers>
     <server name="phase">
       <tool name="get_phase" params="{temperature: float, pressure: float}"/>

@@ -1626,13 +1626,16 @@ async def workflow_log(workflow_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Workflow log — compact, well-formed XML (see data/nimo-workflow-0.0.2.xsd)
+# Workflow log — compact, well-formed XML (see data/nimo-workflow-0.1.0.xsd)
 # ---------------------------------------------------------------------------
 
-# 0.0.4: server-name tag dropped in favor of <nimo tool=..> for built-ins and
-# <call server=.. tool=..> for MCP tools; <server> entries list their tools.
-# (0.0.3 is the name of an older, unshipped schema draft — skipped.)
-_WORKFLOW_XML_VERSION = "0.0.4"
+# 0.1.0: server-name tag dropped in favor of <nimo tool=..> for built-ins and
+# <call server=.. tool=..> for MCP tools; <server> entries list their tools;
+# <controller> and <server url=..> dropped, since how a run was wired up is a
+# property of the run, not of the workflow it describes.
+# (0.0.3 named an unshipped schema draft, and 0.0.4 this same content model
+# before it had a schema of its own — both skipped.)
+_WORKFLOW_XML_VERSION = "0.1.0"
 
 
 def _xa(s: Any) -> str:

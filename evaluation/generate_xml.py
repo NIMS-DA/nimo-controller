@@ -6,7 +6,7 @@ running. The provider and base URL come from config.yaml (``agent.provider`` /
 the model name and thinking level are CLI arguments because the app chooses
 them in the UI, not the config. Progress is logged to stderr; the XML (the same
 ``<nimo-workflow>`` format the app writes as its execution log, see
-data/nimo-workflow-0.0.2.xsd) goes to stdout or --output.
+data/nimo-workflow-0.1.0.xsd) goes to stdout or --output.
 
     uv run python evaluation/generate_xml.py "PHYSBOで10サイクル最適化して" \
         --model gpt-5-mini --thinking low
@@ -128,7 +128,7 @@ def _params_attr(tool: dict) -> str:
 
 def to_nimo_workflow_xml(workflow: Workflow, data: dict) -> str:
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<nimo-workflow version="0.0.4">']
+             '<nimo-workflow version="0.1.0">']
     # MCP servers only — nimo's built-in tools are implied by the version.
     lines.append("  <servers>")
     for sid, meta in (data.get("servers") or {}).items():
