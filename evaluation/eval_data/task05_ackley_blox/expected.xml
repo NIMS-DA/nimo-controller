@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="ackley">
+      <tool name="ackley_function" params="{x1: float, x2: float}"/>
+    </server>
+  </servers>
+  <candidates>
+    <parameter name="x1"/>
+    <parameter name="x2"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <repeat counter="i" times="20">
+      <if counter="i" op="&lt;" value="5">
+        <then><nimo tool="selection" method="RE"/></then>
+        <else><nimo tool="selection" method="BLOX"/></else>
+      </if>
+      <nimo tool="update">
+        <call server="ackley" tool="ackley_function" x1="proposal.x1" x2="proposal.x2"/>
+      </nimo>
+    </repeat>
+    <nimo tool="plot_convex_hull"/>
+  </workflow>
+</nimo-workflow>

@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry, PromptedOutput, RunContext
+from pydantic_ai import Agent, ModelRetry, PromptedOutput, RunContext, ToolOutput
+from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.usage import RunUsage
 
 BUILTIN_SERVER = "nimo"
@@ -35,22 +36,38 @@ BUILTIN_SERVER = "nimo"
 # nimo tools that get no generic block, because the toolbox gives them a
 # dedicated one or hides them entirely. Mirrors NIMO_HARDCODED in frontend.js.
 NIMO_HARDCODED = frozenset({
-    "selection", "maximization", "minimization", "update",
+    "selection", "update",
     "get_parameter_names", "get_proposal", "reinitialize",
+    # Session plumbing the controller drives; a workflow never calls it.
+    "start_session", "start_workflow", "get_session_info",
+    "get_candidate_stats",
 })
 
-# nimo tool -> the Blockly block that calls it. Mirrors NIMO_METHOD_TOOLS in
-# frontend.js, reversed.
+# nimo tool -> the Blockly block that calls it. The one selection tool maps to
+# three UI blocks; nimo_selection is the catalog's representative, and
+# to_blockly_xml picks the PHYSBO / PTR variant from the method argument.
 NIMO_METHOD_BLOCKS = {
     "selection": "nimo_selection",
-    "maximization": "nimo_maximization",
-    "minimization": "nimo_minimization",
 }
-_METHOD_BLOCK_TYPES = frozenset(NIMO_METHOD_BLOCKS.values())
+NIMO_PHYSBO_BLOCK = "nimo_physbo"
+NIMO_PTR_BLOCK = "nimo_selection_ptr"
+_METHOD_BLOCK_TYPES = frozenset({
+    "nimo_selection", NIMO_PHYSBO_BLOCK, NIMO_PTR_BLOCK,
+})
 
-# The dropdown on those three blocks. Named by hand in frontend.js, so it does
-# not follow the "field name is the schema property" rule generated blocks obey.
+# Directional methods — only with these does the minimization argument mean
+# anything, and the PHYSBO block spells it as its MODE dropdown. Keep in sync
+# with DEDICATED_METHODS in frontend.js and OPTIMIZATION_METHODS in nimo_mcp.py.
+OPTIMIZATION_METHODS = frozenset({"PHYSBO"})
+
+# The dropdowns on the hand-written method blocks: the method on the plain
+# selection block, the direction on the PHYSBO block. Named by hand in
+# frontend.js, so neither follows the "field name is the schema property" rule
+# generated blocks obey — MODE in particular stands in for the boolean
+# `minimization` property.
 METHOD_FIELD = "METHOD"
+MODE_FIELD = "MODE"
+MODE_MAXIMIZATION, MODE_MINIMIZATION = "maximization", "minimization"
 
 PROPOSAL_PREFIX = "proposal."
 COUNTER_PREFIX = "counter."
@@ -123,11 +140,11 @@ class ToolSpec:
 
     @property
     def is_method_block(self) -> bool:
-        """True for the three dedicated nimo proposal blocks.
+        """True for the dedicated nimo proposal blocks.
 
         They are hand-written in frontend.js rather than generated from the
-        schema, so their dropdown is named METHOD — not "method", the schema
-        property it fills in.
+        schema, so their dropdowns are named METHOD and MODE — not "method"
+        and "minimization", the schema properties they fill in.
         """
         return self.block_type in _METHOD_BLOCK_TYPES
 
@@ -201,6 +218,14 @@ def _param_specs(input_schema: Optional[dict]) -> tuple[ParamSpec, ...]:
     specs = []
     for name, prop in (schema.get("properties") or {}).items():
         prop = prop if isinstance(prop, dict) else {}
+        # Optional[T] renders as anyOf [T, null]: unwrap to T so the catalog
+        # shows the real type and validate() type-checks the literal.
+        any_of = prop.get("anyOf")
+        if isinstance(any_of, list) and not prop.get("type"):
+            branches = [b for b in any_of
+                        if isinstance(b, dict) and b.get("type") != "null"]
+            if len(branches) == 1:
+                prop = {**prop, **branches[0]}
         enum = _enum_values(schema, prop)
         declared = prop.get("type")
         specs.append(ParamSpec(
@@ -226,9 +251,14 @@ def returns_number(output_schema: Optional[dict]) -> bool:
         return False
     if schema.get("type") in ("number", "integer"):
         return True
-    if schema.get("type") == "object" and schema.get("x-fastmcp-wrap-result") is True:
-        result = (schema.get("properties") or {}).get("result") or {}
-        return isinstance(result, dict) and result.get("type") in ("number", "integer")
+    # Wrapped bare scalar: fastmcp marks it with x-fastmcp-wrap-result, the
+    # official SDK wraps without saying — recognise the {"result": ...}-only
+    # shape too, same as _schema_wraps_result in server.py.
+    if schema.get("type") == "object":
+        props = schema.get("properties") or {}
+        if schema.get("x-fastmcp-wrap-result") is True or set(props) == {"result"}:
+            result = props.get("result") or {}
+            return isinstance(result, dict) and result.get("type") in ("number", "integer")
     return False
 
 
@@ -466,8 +496,49 @@ def _uses(nodes: list[Block], predicate) -> bool:
     return False
 
 
+def _normalize_tool(node: ToolCall) -> None:
+    """Drop method-specific selection arguments the run would ignore anyway.
+
+    nimo's selection() only reads ``minimization`` for the directional methods
+    and the ptr bounds for PTR, so carrying them on another method changes
+    nothing at run time. Removing them here keeps one canonical spelling per
+    behavior — the workflow XML, the Blockly block that renders it and any
+    comparison of two workflows all agree.
+    """
+    if node.server != BUILTIN_SERVER or node.name != "selection":
+        return
+    method = node.arguments.get("method")
+    if method not in OPTIMIZATION_METHODS:
+        node.arguments.pop("minimization", None)
+    if method != "PTR":
+        node.arguments.pop("ptr_lower", None)
+        node.arguments.pop("ptr_upper", None)
+
+
+def normalize(workflow: Workflow) -> Workflow:
+    """Canonicalize *workflow* in place and return it (see _normalize_tool)."""
+    def walk(nodes: list[Block]) -> None:
+        for node in nodes:
+            if isinstance(node, ToolCall):
+                _normalize_tool(node)
+            elif isinstance(node, Update):
+                _normalize_tool(node.tool)
+            elif isinstance(node, Repeat):
+                walk(node.body)
+            elif isinstance(node, If):
+                walk(node.then)
+                walk(node.otherwise)
+
+    walk(workflow.body)
+    return workflow
+
+
 def validate(workflow: Workflow, catalog: Catalog) -> list[str]:
-    """Return a list of human-readable problems; empty means the workflow is valid."""
+    """Normalize *workflow* in place, then return its remaining problems.
+
+    An empty list means the workflow is valid.
+    """
+    normalize(workflow)
     if not workflow.body:
         return ["the workflow is empty - it must contain at least one block"]
     errors = _check_blocks(workflow.body, catalog, set())
@@ -562,7 +633,40 @@ def _value_block_lines(param: ParamSpec, value: str, depth: int) -> list[str]:
             f"{pad}</block>"]
 
 
-def _tool_body_lines(node: ToolCall, spec: ToolSpec, depth: int) -> list[str]:
+def _method_block_type(node: ToolCall) -> str:
+    """Which of the method blocks renders this selection call.
+
+    The block identity carries the method whenever the method has a block of
+    its own: PHYSBO as nimo_physbo (which spells the direction as its MODE
+    dropdown), PTR as nimo_selection_ptr (which holds the range inputs), and
+    everything else as plain nimo_selection with a method dropdown.
+    """
+    method = node.arguments.get("method")
+    if method == "PTR":
+        return NIMO_PTR_BLOCK
+    if method in OPTIMIZATION_METHODS:
+        return NIMO_PHYSBO_BLOCK
+    return "nimo_selection"
+
+
+def _method_block_skips(param: str, block_type: str) -> bool:
+    """Selection-tool arguments this particular method block has no input for.
+
+    The PHYSBO and PTR blocks fix the method, the direction shows only on the
+    PHYSBO block (as MODE, see _tool_body_lines), and only the PTR block
+    carries the range inputs.
+    """
+    if param == "method":
+        return block_type in (NIMO_PHYSBO_BLOCK, NIMO_PTR_BLOCK)
+    if param == "minimization":
+        return block_type != NIMO_PHYSBO_BLOCK
+    if param in ("ptr_lower", "ptr_upper"):
+        return block_type != NIMO_PTR_BLOCK
+    return False
+
+
+def _tool_body_lines(node: ToolCall, spec: ToolSpec, depth: int,
+                     block_type: str = "") -> list[str]:
     """Fields and value inputs of one tool block, in schema order.
 
     Every value input gets its default shadow whether or not the workflow set
@@ -571,7 +675,19 @@ def _tool_body_lines(node: ToolCall, spec: ToolSpec, depth: int) -> list[str]:
     """
     lines: list[str] = []
     for param in spec.params:
+        if spec.is_method_block and _method_block_skips(param.name, block_type):
+            continue
         value = node.arguments.get(param.name)
+        # The PHYSBO block spells the boolean `minimization` argument as a
+        # direction dropdown, so it is a field with no socket — the schema type
+        # alone would give it a value input with a logic_boolean shadow. An
+        # absent argument means maximization, matching the tool's own default
+        # (minimization=False) and the first entry of the dropdown.
+        if block_type == NIMO_PHYSBO_BLOCK and param.name == "minimization":
+            lines.append(_field(MODE_FIELD,
+                                MODE_MINIMIZATION if value == "true" else MODE_MAXIMIZATION,
+                                depth))
+            continue
         if param.is_field:
             name = METHOD_FIELD if spec.is_method_block else param.name
             lines.append(_field(name, value if value is not None
@@ -620,8 +736,9 @@ def _block_lines(node: Block, rest: list[Block], catalog: Catalog, depth: int,
         spec = catalog.tool(node.server, node.name)
         if spec is None:                       # validate() rejects this first
             raise ValueError(f"no block for {node.server}.{node.name}")
-        block_type = spec.block_type
-        inner += _tool_body_lines(node, spec, depth + 1)
+        block_type = (_method_block_type(node) if spec.is_method_block
+                      else spec.block_type)
+        inner += _tool_body_lines(node, spec, depth + 1, block_type)
     else:
         raise TypeError(f"unknown block: {node!r}")
 
@@ -696,7 +813,9 @@ A workflow is a sequence of blocks:
              fed to nimo as the objective value of the current proposal, which
              advances the optimization. Use this for the measurement step.
 * repeat   - run a body `times` times (1 to 1000); `counter` names the loop
-             counter and is always required.
+             counter and is always required. The counter is 0-based: it is 0
+             on the first round and times-1 on the last, so "the first 5
+             rounds" is `counter < 5`.
 * if       - the ONLY condition available is a comparison between a loop
              counter and an integer (==, <, >, <=, >=). Conditions on measured
              values cannot be expressed.
@@ -710,9 +829,13 @@ Argument values are strings and take one of three forms:
 
 Rules:
 
-* nimo proposes the next experiment in one of three ways: `selection` for
-  algorithms with no direction to optimize toward, `maximization` for a larger
-  objective, `minimization` for a smaller one. Pick the one the user asked for.
+* nimo proposes the next experiment with `selection`. RE, ES (exhaustive
+  search), DOE, BLOX and PDC search without a direction to optimize toward -
+  never give them a "minimization" argument. Only PHYSBO optimizes the
+  objective: set "minimization" to "true" to optimize toward a smaller
+  objective, "false" (or omit it) for a larger one. PTR targets an objective
+  range: set "ptr_lower" / "ptr_upper" to its bounds (numbers; omit a bound
+  to leave that side unconstrained).
 * A typical optimization loop repeats: a nimo proposal, then a measurement tool
   wrapped in update, receiving proposal.<parameter> as its arguments. Emit the
   nimo proposal before any use of proposal.<parameter>.
@@ -723,34 +846,62 @@ Rules:
   one of those literals and nothing else, never proposal.* or counter.*.
 * Only use servers, tools and argument names that appear in the catalog below.
 * Do not invent parameters; the declared parameters are fixed.
+* Every element of a `body` array is a block object of its own and starts with
+  its "kind". A block that comes after a repeat is a new object written after
+  the repeat's closing brace - never a run of loose strings in the array.
 
-Example of a ten-cycle PHYSBO loop measuring with a tool named get_phase:
+Example of a ten-cycle PHYSBO loop measuring with a tool named get_phase,
+followed by one more block once the loop is over:
 
 {"body": [
   {"kind": "repeat", "times": 10, "counter": "i", "body": [
-    {"kind": "tool", "server": "nimo", "name": "maximization",
-     "arguments": {"method": "PHYSBO"}},
+    {"kind": "tool", "server": "nimo", "name": "selection",
+     "arguments": {"method": "PHYSBO", "minimization": "false"}},
+    {"kind": "update", "tool": {
+      "kind": "tool", "server": "sdl", "name": "get_phase",
+      "arguments": {"temperature": "proposal.temperature",
+                    "pressure": "proposal.pressure"}}}
+  ]},
+  {"kind": "tool", "server": "sdl", "name": "shutdown", "arguments": {}}
+]}
+
+Example of a twenty-cycle run whose first five cycles use RE and whose
+remaining fifteen use PHYSBO:
+
+{"body": [
+  {"kind": "repeat", "times": 20, "counter": "i", "body": [
+    {"kind": "if", "counter": "i", "op": "<", "value": 5,
+     "then": [
+       {"kind": "tool", "server": "nimo", "name": "selection",
+        "arguments": {"method": "RE"}}],
+     "otherwise": [
+       {"kind": "tool", "server": "nimo", "name": "selection",
+        "arguments": {"method": "PHYSBO", "minimization": "false"}}]},
     {"kind": "update", "tool": {
       "kind": "tool", "server": "sdl", "name": "get_phase",
       "arguments": {"temperature": "proposal.temperature",
                     "pressure": "proposal.pressure"}}}
   ]}
 ]}
+
+Write the workflow JSON indented over several lines the way the example is,
+one block per line or better; do not compress it onto a single line.
 """
 
 
-def build_planner_agent(model: Any) -> Agent:
-    """Build the sub-agent that writes workflows, on top of *model*."""
+def build_planner_agent(model: Any, instructions: Optional[str] = None) -> Agent:
+    """Build the sub-agent that writes workflows, on top of *model*.
+
+    ``instructions`` overrides the static INSTRUCTIONS text (used by the
+    prompt-optimization loop in evaluation/); the dynamic catalog part is
+    appended either way.
+    """
+    # PromptedOutput is used based on performance comparison on Ollama.
     agent = Agent(
         model,
         deps_type=Catalog,
-        # Prompted output, not the default tool output: the recursive block union
-        # does not survive the trip through Ollama's tool definitions - the model
-        # only sees "body: any[]" and guesses. PromptedOutput puts the full JSON
-        # schema, $defs and all, into the instructions.
         output_type=PromptedOutput(Workflow),
-        instructions=INSTRUCTIONS,
-        retries=3,
+        instructions=INSTRUCTIONS if instructions is None else instructions
     )
 
     @agent.instructions
@@ -771,11 +922,20 @@ def build_planner_agent(model: Any) -> Agent:
 
 
 async def write_workflow(instruction: str, catalog: Catalog, model: Any,
-                         usage: Optional[RunUsage] = None) -> Workflow:
+                         usage: Optional[RunUsage] = None,
+                         model_settings: Any = None,
+                         event_stream_handler: Any = None,
+                         instructions: Optional[str] = None) -> Workflow:
     """Turn a natural-language instruction into a validated workflow.
 
     ``usage`` is passed through so the tokens this sub-agent spends are counted
     against the conversation that delegated to it, rather than vanishing.
+    ``model_settings`` carries the caller's thinking level (the planner agent
+    itself sets none), ``event_stream_handler`` lets the caller watch the run
+    live — e.g. to surface the planner's thinking in a UI — and
+    ``instructions`` overrides the prompt (prompt optimization only).
     """
-    result = await build_planner_agent(model).run(instruction, deps=catalog, usage=usage)
+    result = await build_planner_agent(model, instructions).run(
+        instruction, deps=catalog, usage=usage, model_settings=model_settings,
+        event_stream_handler=event_stream_handler)
     return result.output

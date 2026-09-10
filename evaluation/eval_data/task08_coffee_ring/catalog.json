@@ -1,0 +1,390 @@
+{
+  "tools": [
+    {
+      "server_id": "nimo",
+      "name": "get_parameter_names",
+      "description": "Return the input parameter names derived from candidates.csv.\n\nReturns an empty list if no candidates file has been loaded yet.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "selection",
+      "description": "Propose the next experimental parameters.\n\nRuns the specified algorithm on the current candidates and writes the\nresult to proposals.csv in the session directory.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "description": "Algorithm to use. RE, ES, DOE, BLOX and PDC search without\na direction to optimize toward; PHYSBO optimizes the\nobjective; PTR proposes candidates whose predicted objective\nfalls in a target range.",
+            "enum": [
+              "RE",
+              "ES",
+              "DOE",
+              "BLOX",
+              "PDC",
+              "PHYSBO",
+              "PTR"
+            ],
+            "type": "string"
+          },
+          "minimization": {
+            "default": false,
+            "type": "boolean",
+            "description": "True to optimize toward a smaller objective, False\nfor a larger one. Only meaningful for PHYSBO."
+          },
+          "ptr_lower": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Lower bound of the PTR target range. Omitted means\nunbounded below. Only meaningful for PTR."
+          },
+          "ptr_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Upper bound of the PTR target range. Omitted means\nunbounded above. Only meaningful for PTR."
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": {
+          "type": "number"
+        },
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "update",
+      "description": "Record an experimental result and advance the optimization.\n\nWrites the objective value back into the run's candidates.csv\nand updates the nimo history.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "objs": {
+            "type": "number",
+            "description": "The observed objective value for the latest proposal."
+          }
+        },
+        "required": [
+          "objs"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_history_best",
+      "description": "Plot the best objective value found so far across iterations.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "description": "\"maximization\" to track the running highest value,\n\"minimization\" the running lowest. Set it to match the\ndirection of the selection that produced the data, or the\ncurve runs the wrong way.",
+            "enum": [
+              "maximization",
+              "minimization"
+            ],
+            "type": "string",
+            "default": "maximization"
+          }
+        },
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_convex_hull",
+      "description": "Plot how the convex hull area of the proposed parameters grew.\n\nThe area covered by all parameter points observed so far, per cycle \u2014\na diversity measure for selection algorithms such as BLOX. Only\navailable when there are exactly two parameters.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_distribution",
+      "description": "Plot the distribution of the measured objective values.\n\nA histogram for a single objective (a scatter for two, 3D scatter for\nthree). Reads the measured rows of the current run's candidates.csv.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_phase_diagram",
+      "description": "Plot the constructed phase diagram for the current run.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "start_session",
+      "description": "Begin a new session: a fresh folder and a clean optimization state.\n\nA session spans however many workflow runs the user makes \u2014 they all\nshare one candidates.csv and keep building on the same history, so this\nis deliberately *not* called per run. Re-reads the master\ncandidates.csv, so a freshly uploaded file takes effect here.\n\nReturns:\n    The new run directory and the candidates columns it was built from.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "start_workflow",
+      "description": "Snapshot the candidates and reset per-workflow optimization state.\n\nHistory and the iteration counter restart so each workflow's plot shows\nthat run's own progress, taking everything known so far as cycle 0.\nThe two must move together: update() tags new rows with ``itt+1`` and\nplot_history_best() draws ``num_cycles=iteration``, so a fresh history\nunder a stale counter would not line up.\n\nReturns:\n    The snapshot's file name (not a full path), for the log and XML.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "get_session_info",
+      "description": "Return the current run directory and the candidates columns.\n\nThe controller renders these into the workflow XML and the report, and\nreads the run directory's files directly, so they have to be readable\nfrom outside this process.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "get_candidate_stats",
+      "description": "Return how much of candidates.csv has been measured.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "get_proposal",
+      "description": "Return the most recently proposed parameter values.\n\nReads the first row of proposals.csv in the current run directory.\n\nReturns:\n    A dictionary mapping each parameter name to its value.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": {
+          "type": "number"
+        },
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "coffee",
+      "name": "load_plate",
+      "description": "Robot loads an empty well plate into the liquid handler.\nOnly one plate is on the stage at a time.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "coffee",
+      "name": "prepare_sample",
+      "description": "Robot prepares a sample solution in a mix plate.\npva and dtab specify the concentration of each reagent (0 to 1).\nThis function must be called when an empty well plate is loaded in the liquid handler.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "pva": {
+            "type": "number"
+          },
+          "dtab": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "pva",
+          "dtab"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "coffee",
+      "name": "heat_plate",
+      "description": "Robot heats the stage until the droplet has dried completely.\nThe sample solution must be prepared before calling this tool.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "coffee",
+      "name": "get_image",
+      "description": "Take an image of the dried droplet.\nReturns 1 when the ring is observed; otherwise 0 is returned.\nThe well plate must be dried before calling this tool.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "coffee",
+      "name": "place_plate",
+      "description": "Robot places the well plate in the rack.\nThe stage is left empty, ready for the next plate.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    }
+  ],
+  "parameters": [
+    "pva",
+    "dtab"
+  ],
+  "objectives": [
+    "objective"
+  ],
+  "servers": {
+    "coffee": {
+      "version": "0.0.1+0886537"
+    }
+  }
+}

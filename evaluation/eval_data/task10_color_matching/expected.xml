@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="color">
+      <tool name="move_to_home"/>
+      <tool name="move_to_color_well" params="{color: str}"/>
+      <tool name="move_to_mix_well" params="{well: int}"/>
+      <tool name="aspirate" params="{volume: float}"/>
+      <tool name="dispense" params="{volume: float}"/>
+      <tool name="get_color_diff" params="{well: int, target_hex: str}"/>
+    </server>
+  </servers>
+  <candidates>
+    <parameter name="blue"/>
+    <parameter name="yellow"/>
+    <parameter name="red"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <call server="color" tool="move_to_home"/>
+    <repeat counter="i" times="12">
+      <if counter="i" op="&lt;" value="4">
+        <then><nimo tool="selection" method="RE"/></then>
+        <else><nimo tool="selection" method="PHYSBO" minimization="true"/></else>
+      </if>
+      <call server="color" tool="move_to_color_well" color="red"/>
+      <call server="color" tool="aspirate" volume="proposal.red"/>
+      <call server="color" tool="move_to_mix_well" well="counter.i"/>
+      <call server="color" tool="dispense" volume="proposal.red"/>
+      <call server="color" tool="move_to_color_well" color="blue"/>
+      <call server="color" tool="aspirate" volume="proposal.blue"/>
+      <call server="color" tool="move_to_mix_well" well="counter.i"/>
+      <call server="color" tool="dispense" volume="proposal.blue"/>
+      <call server="color" tool="move_to_color_well" color="yellow"/>
+      <call server="color" tool="aspirate" volume="proposal.yellow"/>
+      <call server="color" tool="move_to_mix_well" well="counter.i"/>
+      <call server="color" tool="dispense" volume="proposal.yellow"/>
+      <nimo tool="update">
+        <call server="color" tool="get_color_diff" well="counter.i" target_hex="00ffff"/>
+      </nimo>
+    </repeat>
+    <nimo tool="plot_history_best" minimization="true"/>
+  </workflow>
+</nimo-workflow>

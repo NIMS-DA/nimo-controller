@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="coffee">
+      <tool name="load_plate"/>
+      <tool name="prepare_sample" params="{pva: float, dtab: float}"/>
+      <tool name="heat_plate"/>
+      <tool name="get_image"/>
+      <tool name="place_plate"/>
+    </server>
+  </servers>
+  <candidates>
+    <parameter name="pva"/>
+    <parameter name="dtab"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <repeat counter="i" times="20">
+      <if counter="i" op="&lt;" value="5">
+        <then><nimo tool="selection" method="RE"/></then>
+        <else><nimo tool="selection" method="PDC"/></else>
+      </if>
+      <call server="coffee" tool="load_plate"/>
+      <call server="coffee" tool="prepare_sample" pva="proposal.pva" dtab="proposal.dtab"/>
+      <call server="coffee" tool="heat_plate"/>
+      <nimo tool="update">
+        <call server="coffee" tool="get_image"/>
+      </nimo>
+      <call server="coffee" tool="place_plate"/>
+    </repeat>
+    <nimo tool="plot_phase_diagram"/>
+  </workflow>
+</nimo-workflow>

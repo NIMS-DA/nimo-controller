@@ -19,6 +19,12 @@
 </head>
 
 <body>
+  <!-- Shown from the first paint until main() finishes its init fetches. -->
+  <div id="bootOverlay">
+    <div class="boot-msg">⏳ Preparing…
+      <div class="boot-stage" id="bootStage"></div>
+    </div>
+  </div>
   <div id="appRoot">
     <!-- Header -->
     <div id="header">

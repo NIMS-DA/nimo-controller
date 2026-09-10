@@ -26,6 +26,7 @@ from fastmcp import Client
 from html import escape as html_escape
 
 from . import report
+from .nimo_client import NIMO_MCP_NAME, nimo_client
 from .paths import (
     AGENT_STATE_FILE,
     CANDIDATES_FILE,
@@ -58,9 +59,6 @@ def _load_config(path: Path = _CONFIG_PATH) -> dict:
 
 _cfg = _load_config()
 
-# NIMO runs in-process via direct function calls (see nimo_tools).
-NIMO_MCP_NAME: str = "nimo"
-
 # Additional MCP servers
 _mcp_raw = _cfg.get("mcp_servers") or {}
 MCP_SERVERS: Dict[str, str] = {str(k): str(v) for k, v in _mcp_raw.items()} if isinstance(_mcp_raw, dict) else {}
@@ -77,6 +75,10 @@ _agent_raw = _cfg.get("agent") or {}
 AGENT_CONFIG: Dict[str, Any] = _agent_raw if isinstance(_agent_raw, dict) else {}
 
 # Internal constants (not user-configurable)
+# The untouched copy NIMO writes beside the working candidates.csv when a
+# session starts (INITIAL_CANDIDATES in nimo_mcp, which lives in the
+# subprocess and must not be imported here).
+INITIAL_CANDIDATES = "candidates_initial.csv"
 NIMO_VAR_KEY = "__nimo_var__"
 LAST_FLOAT_KEY = "__last_float__"
 LOOP_COUNTER_KEY = "__loop_counter__"
@@ -91,7 +93,6 @@ class JobEvent:
     id: int
     event: str
     data: Any
-    ts: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -154,11 +155,6 @@ class Session:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
-
-def now_s() -> float:
-    """Return the current UNIX timestamp in seconds."""
-    return time.time()
-
 
 def sse(ev_id: int, event: str, data: Any) -> str:
     """Format a single Server-Sent Events frame.
@@ -355,22 +351,22 @@ def extract_images(source: Any) -> list[dict]:
 # Workflow execution
 # ---------------------------------------------------------------------------
 
-def _start_session(app: FastAPI) -> "Session":
+async def _start_session(app: FastAPI) -> "Session":
     """Begin a new session and make it the current one.
 
-    Wraps NimoWrapper.start_session(), which is what creates the folder and
-    copies the master candidates.csv into it.
+    Calls NIMO's start_session, which creates the folder and copies the master
+    candidates.csv into it, then reads back the run directory — the app and
+    the report load files from it directly.
     """
-    from .nimo_tools import INITIAL_CANDIDATES
-
-    wrapper = app.state.nimo_wrapper
-    wrapper.start_session()
+    info = (await app.state.client_nimo.call_tool("start_session", {})).data
+    run_dir = info["run_dir"]
+    app.state.nimo_columns = info      # parameters/objectives, for XML and report
     previous: Optional[Session] = getattr(app.state, "session", None)
     app.state.session = Session(
-        started_at=now_s(),
-        run_dir=wrapper.run_dir,
+        started_at=time.time(),
+        run_dir=run_dir,
         candidates_snapshot=INITIAL_CANDIDATES,
-        candidates_sha256=_file_sha256(os.path.join(wrapper.run_dir, INITIAL_CANDIDATES)),
+        candidates_sha256=_file_sha256(os.path.join(run_dir, INITIAL_CANDIDATES)),
         # Carried over: which language someone writes in is a fact about them,
         # not about the campaign, and "New session" clears the conversation it
         # would otherwise have to be worked out from again.
@@ -550,6 +546,7 @@ async def _exec_node(app: FastAPI, job: Job, node: dict, ctx: dict) -> None:
     output_schema = _attr(meta, "outputSchema")
     use_task = _supports_tasks(client) and _meta_supports_task(meta)
 
+    app.state.nimo_notes = []
     if use_task:
         r = await _call_tool_as_task(client, tool, resolved, _job_handle_sink(job))
     else:
@@ -564,10 +561,11 @@ async def _exec_node(app: FastAPI, job: Job, node: dict, ctx: dict) -> None:
         result = [{"type": "image", "mimeType": img.get("mimeType", "image/png"),
                    "size": len(img.get("data", ""))} for img in images]
 
-    # A substituted algorithm must never pass unnoticed. It rides along with the
-    # output so it lands inside this call's card rather than as a loose line
-    # below it, and it stays in the history that the session markdown is built from.
-    notes = getattr(r, "notes", None) or []
+    # A substituted algorithm must never pass unnoticed. NIMO reports it as an
+    # MCP log message during the call (see _nimo_log_handler); it is picked up
+    # here so it lands inside this call's card rather than as a loose line
+    # below it, and it stays in the history the session markdown is built from.
+    notes = app.state.nimo_notes if server_id == NIMO_MCP_NAME else []
     output: dict[str, Any] = {"data": result}
     if images:
         output["images"] = images
@@ -646,11 +644,6 @@ def _meta_supports_task(meta: Any) -> bool:
     return _attr(execution, "taskSupport", "forbidden") in ("optional", "required")
 
 
-async def _tool_supports_task(client: Client, tool_name: str) -> bool:
-    """Check if a specific tool declares taskSupport as 'optional' or 'required'."""
-    return _meta_supports_task(await _find_tool(client, tool_name))
-
-
 def _detach_task_cancel(task: Any) -> None:
     """Fire ``task.cancel()`` (a coroutine) without awaiting the current context.
 
@@ -722,15 +715,26 @@ async def lifespan(app: FastAPI):
     # and each spends a model call getting there.
     app.state.report_lock = asyncio.Lock()
 
-    # NIMO runs in-process: call NimoWrapper directly (no MCP server/subprocess).
-    # Tool schemas are snapshotted once so /tools keeps its previous output.
-    from .nimo_tools import wrapper as nimo_wrapper, LocalNimoClient, snapshot_nimo_tools
+    # NIMO runs as a stdio MCP subprocess, so nimo's crashes and sys.exit()
+    # paths cannot take the app with them.
+    app.state.nimo_notes: List[str] = []
 
-    log.info("Using in-process NIMO (direct function calls)")
-    nimo = LocalNimoClient(nimo_wrapper, await snapshot_nimo_tools())
+    async def _nimo_log_handler(message: Any) -> None:
+        """Collect NIMO's spoken-word notes for the call in flight.
+
+        A buffer rather than a per-call value because the note arrives while
+        the tool is still running; _exec_node clears it before each call, the
+        same way the wrapper used to reset its own notes list.
+        """
+        text = (getattr(message, "data", None) or {})
+        text = text.get("msg") if isinstance(text, dict) else str(text)
+        if text:
+            app.state.nimo_notes.append(text)
+
+    nimo = nimo_client(log_handler=_nimo_log_handler)
     await nimo.__aenter__()
     app.state.client_nimo = nimo
-    app.state.nimo_wrapper = nimo_wrapper  # for reading the current run_dir
+    log.info("Started NIMO (stdio subprocess)")
 
     # One session folder for the whole app run. Without a candidates file there
     # is nothing to copy yet, so the first upload starts the session instead —
@@ -738,7 +742,7 @@ async def lifespan(app: FastAPI):
     app.state.session = None
     if os.path.isfile(str(CANDIDATES_FILE)):
         try:
-            _start_session(app)
+            await _start_session(app)
             log.info("Session folder: %s", app.state.session.run_dir)
         except Exception as e:
             log.error("Could not start a session: %s", e)
@@ -763,6 +767,9 @@ async def lifespan(app: FastAPI):
                 pass
     app.state.mcp_clients = clients
     app.state.dynamic_servers: Dict[str, str] = dict(connected_servers)
+    # Snapshot for the sync workflow-XML renderer; kept fresh by every
+    # _collect_tools() call (the page hits /tools on load and server changes).
+    app.state.tool_specs = await _collect_tools()
 
     # Chat agent (fail-safe). Imported here, not at module scope, because
     # importing pydantic_ai is slow — skip it entirely when the agent is off.
@@ -853,6 +860,7 @@ async def _collect_tools() -> List[dict]:
                              "output_schema": getattr(t, "outputSchema", None)})
         except Exception:
             pass
+    app.state.tool_specs = out   # keep the workflow-XML renderer's copy fresh
     return out
 
 
@@ -911,6 +919,7 @@ async def _agent_call_tool(server_id: str, tool: str, args: dict,
         client = _get_client(app, server_id)
         meta = await _find_tool(client, tool)
         output_schema = _attr(meta, "outputSchema")
+        app.state.nimo_notes = []
         # Prefer the task-augmented path so a stop can reach the server; fall
         # back to a plain call for servers or tools that do not offer it.
         if call_id and _supports_tasks(client) and _meta_supports_task(meta):
@@ -932,7 +941,7 @@ async def _agent_call_tool(server_id: str, tool: str, args: dict,
         out["images"] = images
     # Notes go to the model as well: it should know when the algorithm it asked
     # for was substituted, or its next answer will misdescribe what ran.
-    notes = getattr(r, "notes", None) or []
+    notes = app.state.nimo_notes if server_id == NIMO_MCP_NAME else []
     if notes:
         out["notes"] = notes
     # Chat-driven calls belong in the session record too — the folder should
@@ -1033,7 +1042,7 @@ async def upload_candidates(file: UploadFile):
 
     # New candidates mean a new campaign, so this starts a fresh session.
     try:
-        session = _start_session(app)
+        session = await _start_session(app)
     except Exception as e:
         return {"ok": False, "error": f"File saved but the session failed to start: {e}"}
 
@@ -1471,7 +1480,8 @@ async def workflow_start(req: WorkflowStartRequest):
             if app.state.session is None:
                 raise RuntimeError(
                     "No session yet — upload a candidates file to start one.")
-            job.candidates_snapshot = app.state.nimo_wrapper.start_workflow()
+            job.candidates_snapshot = (
+                await app.state.client_nimo.call_tool("start_workflow", {})).data
             # Rendered now, not at the end: it describes the run's inputs, and
             # the snapshot hash it carries must be the one taken just above.
             # The session log reuses this exact string.
@@ -1555,7 +1565,7 @@ async def workflow_events(workflow_id: str, request: Request):
 
     async def gen():
         sent = last_id
-        ping_at = now_s()
+        ping_at = time.time()
         while True:
             if await request.is_disconnected():
                 break
@@ -1563,7 +1573,7 @@ async def workflow_events(workflow_id: str, request: Request):
                 if e.id > sent:
                     yield sse(e.id, e.event, e.data)
                     sent = e.id
-            t = now_s()
+            t = time.time()
             if t - ping_at >= 15:
                 yield ": ping\n\n"
                 ping_at = t
@@ -1619,7 +1629,10 @@ async def workflow_log(workflow_id: str):
 # Workflow log — compact, well-formed XML (see data/nimo-workflow-0.0.2.xsd)
 # ---------------------------------------------------------------------------
 
-_WORKFLOW_XML_VERSION = "0.0.2"
+# 0.0.4: server-name tag dropped in favor of <nimo tool=..> for built-ins and
+# <call server=.. tool=..> for MCP tools; <server> entries list their tools.
+# (0.0.3 is the name of an older, unshipped schema draft — skipped.)
+_WORKFLOW_XML_VERSION = "0.0.4"
 
 
 def _xa(s: Any) -> str:
@@ -1628,29 +1641,52 @@ def _xa(s: Any) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+_PARAM_TYPE_NAMES = {"number": "float", "integer": "int", "string": "str",
+                     "boolean": "bool"}
+
+
+def _tool_params_attr(spec: dict) -> str:
+    """Compact signature, e.g. params="{x1: float, x2: float}"; "" if no args."""
+    props = (spec.get("input_schema") or {}).get("properties") or {}
+    if not props:
+        return ""
+    sig = ", ".join(
+        f"{k}: {_PARAM_TYPE_NAMES.get(v.get('type'), v.get('type') or 'any')}"
+        for k, v in props.items())
+    return f' params="{{{_xa(sig)}}}"'
+
+
 def _servers_xml(app: FastAPI, indent: str) -> str:
     """Build the <servers> block from the connected MCP clients.
 
-    NIMO is not listed: it runs in-process as direct Python calls, so it is not
-    a server this run connected to. Its tools still appear in the procedure as
-    server="nimo".
+    NIMO is not listed: it runs in-process as direct Python calls, and its
+    built-in tools are implied by the nimo-workflow version. Each server
+    carries the tools it offered, from the snapshot _collect_tools() keeps.
     """
     lines = [f"{indent}<servers>"]
-    dynamic = getattr(app.state, "dynamic_servers", {}) or {}
     clients = getattr(app.state, "mcp_clients", {}) or {}
+    specs = getattr(app.state, "tool_specs", None) or []
     for sid, client in clients.items():
-        url = dynamic.get(sid, "")
         init = getattr(client, "initialize_result", None)
         info = getattr(init, "serverInfo", None) if init is not None else None
         ver = getattr(info, "version", None) if info is not None else None
         # No type attribute: every entry here is an MCP server, since NIMO is
-        # excluded above.
-        attrs = f' name="{_xa(sid)}" url="{_xa(url)}"'
+        # excluded above. No url either — where a server was reached is a
+        # property of this run, not of the workflow being described.
+        attrs = f' name="{_xa(sid)}"'
         if ver:
             # Full serverInfo.version. A git commit is carried inside this single
             # version string as semver build metadata (e.g. "1.2.3+abc1234").
             attrs += f' version="{_xa(ver)}"'
-        lines.append(f"{indent}  <server{attrs}/>")
+        tools = [t for t in specs if t.get("server_id") == sid]
+        if not tools:
+            lines.append(f"{indent}  <server{attrs}/>")
+            continue
+        lines.append(f"{indent}  <server{attrs}>")
+        for t in tools:
+            lines.append(f'{indent}    <tool name="{_xa(t.get("name", ""))}"'
+                         f"{_tool_params_attr(t)}/>")
+        lines.append(f"{indent}  </server>")
     lines.append(f"{indent}</servers>")
     return "\n".join(lines)
 
@@ -1672,14 +1708,17 @@ def _candidates_xml(app: FastAPI, job: Optional["Job"], indent: str) -> str:
     rewritten by the time the log is rendered. Without a snapshot neither is
     emitted, since a hash whose file is unknown says nothing.
     """
-    wrapper = getattr(app.state, "nimo_wrapper", None)
-    params = getattr(wrapper, "parameter_names", None) or []
-    objectives = getattr(wrapper, "objective_names", None) or []
+    # Read back from the session start rather than asked for now: this is a
+    # sync renderer, and the columns cannot change within a session anyway.
+    columns = getattr(app.state, "nimo_columns", None) or {}
+    params = columns.get("parameters") or []
+    objectives = columns.get("objectives") or []
 
     attrs = ""
     snapshot = getattr(job, "candidates_snapshot", None) if job else None
     if snapshot:
-        run_dir = getattr(wrapper, "run_dir", "") or ""
+        session: Optional[Session] = getattr(app.state, "session", None)
+        run_dir = getattr(session, "run_dir", "") or ""
         sha = _file_sha256(os.path.join(run_dir, snapshot)) if run_dir else None
         attrs = f' snapshot="{_xa(snapshot)}"'
         if sha:
@@ -1717,12 +1756,28 @@ def _arg_attr(k: str, v: Any) -> str:
 
 
 def _tool_xml(node: dict, indent: str) -> str:
-    attrs = f' server="{_xa(node.get("server_id", ""))}" name="{_xa(node.get("tool", ""))}"'
+    """<nimo tool=..> for built-ins, <call server=.. tool=..> for MCP tools.
+
+    The selection tool carries its direction in the minimization argument, so
+    no name mapping is needed; plot_history_best still spells its direction as
+    a mode argument, rendered as the same minimization flag.
+    """
+    sid = node.get("server_id", "")
+    flag = ""
     args = node.get("args", {})
-    if isinstance(args, dict):
-        for k, v in args.items():
-            attrs += _arg_attr(k, v)
-    return f"{indent}<tool{attrs}/>"
+    args = dict(args) if isinstance(args, dict) else {}
+    if sid == NIMO_MCP_NAME:
+        name = node.get("tool", "")
+        if name == "plot_history_best" and "mode" in args:
+            if args.pop("mode") == "minimization":
+                flag = ' minimization="true"'
+        tag, attrs = "nimo", f' tool="{_xa(name)}"'
+    else:
+        tag, attrs = "call", (f' server="{_xa(sid)}"'
+                              f' tool="{_xa(node.get("tool", ""))}"')
+    for k, v in args.items():
+        attrs += _arg_attr(k, v)
+    return f"{indent}<{tag}{attrs}{flag}/>"
 
 
 def _blocks_xml(nodes: Any, indent: str) -> list[str]:
@@ -1771,7 +1826,7 @@ def _block_xml(node: dict, indent: str) -> str:
     if kind == "update":
         body = _blocks_xml(node.get("body", []), indent + "  ")
         inner = ("\n" + "\n".join(body) + f"\n{indent}") if body else ""
-        return f"{indent}<update>{inner}</update>"
+        return f'{indent}<nimo tool="update">{inner}</nimo>'
     return f"{indent}<!-- unknown block: {_xa(kind)} -->"
 
 
@@ -2081,9 +2136,9 @@ async def _await_workflow(on_start: Optional[Callable[[str], None]] = None) -> d
         # Answering now rather than waiting out the start timeout for nothing.
         return {"status": "busy", "digest": ""}
 
-    deadline = now_s() + WORKFLOW_START_TIMEOUT_S
+    deadline = time.time() + WORKFLOW_START_TIMEOUT_S
     job: Optional[Job] = None
-    while now_s() < deadline:
+    while time.time() < deadline:
         cur: Optional[Job] = getattr(app.state, "current_workflow", None)
         if cur is not None and cur.id != prev_id:
             job = cur
@@ -2116,10 +2171,10 @@ REPORT_MD = "report.md"
 REPORT_HTML = "report.html"
 
 # Figures the report knows how to caption: file-name stem -> label key. Anything
-# else in the folder is left alone. The stems match the file names nimo_tools'
+# else in the folder is left alone. The stems match the file names nimo_mcp's
 # plot_history_best and plot_phase_diagram write, and have to be edited in step
-# with them. They are spelled out rather than imported because importing
-# nimo_tools pulls in the nimo library, which is too slow to do at module scope.
+# with them. They are spelled out rather than imported because nimo_mcp lives
+# in the NIMO subprocess and pulls in the nimo library with it.
 REPORT_FIGURES = (("best_objective", "fig_history"), ("phase_diagram", "fig_phase"))
 
 
@@ -2142,17 +2197,26 @@ def _report_direction() -> str:
                  else list(reversed(entry.get("history") or [])))
         for step in steps:
             if step.get("server_id") == "nimo" and step.get("tool") in report.PROPOSAL_TOOLS:
-                return ("minimization" if step.get("tool") == "minimization"
-                        else "maximization")
+                # New logs: selection with a minimization argument. Old logs
+                # (before the tool merge): a dedicated minimization tool.
+                args = step.get("args") or {}
+                minimize = (args.get("minimization") in (True, "true")
+                            or step.get("tool") == "minimization")
+                return "minimization" if minimize else "maximization"
     return "maximization"
 
 
-def _candidate_stats() -> Any:
-    """The wrapper's own measured/unmeasured counts, or None if unreadable."""
+async def _candidate_stats() -> dict:
+    """NIMO's measured/unmeasured counts, or {} if unreadable.
+
+    Async because it crosses to the NIMO subprocess; the report builder is
+    sync (it runs in a thread), so the caller fetches this first and passes
+    the result in.
+    """
     try:
-        return app.state.nimo_wrapper._candidate_stats()
+        return (await app.state.client_nimo.call_tool("get_candidate_stats", {})).data
     except Exception:
-        return None
+        return {}
 
 
 def _collect_figures(notes: List[str],
@@ -2196,15 +2260,18 @@ def _collect_figures(notes: List[str],
     return figures
 
 
-def _collect_report_data(lang: str = report.DEFAULT_LANG) -> report.ReportData:
+def _collect_report_data(lang: str = report.DEFAULT_LANG,
+                         stats: Optional[dict] = None) -> report.ReportData:
     """Gather everything the report needs. Blocking — it reads the CSVs.
 
     ``lang`` arrives up front rather than being set afterwards: the notes and
     figure captions written here are report content, so they need the same
-    language as the headings around them.
+    language as the headings around them. ``stats`` is passed in because it
+    comes from the NIMO subprocess, which this sync function cannot reach.
     """
     session: Session = app.state.session
-    wrapper = app.state.nimo_wrapper
+    columns = getattr(app.state, "nimo_columns", None) or {}
+    stats = stats or {}
     notes: List[str] = []
 
     job: Optional[Job] = getattr(app.state, "current_workflow", None)
@@ -2213,8 +2280,7 @@ def _collect_report_data(lang: str = report.DEFAULT_LANG) -> report.ReportData:
 
     direction = _report_direction()
     figures = _collect_figures(notes, lang)
-    stats = _candidate_stats()
-    objectives = tuple(getattr(wrapper, "objective_names", ()) or ())
+    objectives = tuple(columns.get("objectives") or ())
     best = None
     if objectives:
         best = report.best_objective(
@@ -2226,12 +2292,12 @@ def _collect_report_data(lang: str = report.DEFAULT_LANG) -> report.ReportData:
         run_dir=session.run_dir,
         candidates_snapshot=session.candidates_snapshot or "",
         candidates_sha256=session.candidates_sha256 or "",
-        parameter_names=tuple(getattr(wrapper, "parameter_names", ()) or ()),
+        parameter_names=tuple(columns.get("parameters") or ()),
         objective_names=objectives,
         direction=direction,
-        total=getattr(stats, "total", 0),
-        measured=getattr(stats, "measured", 0),
-        unmeasured=getattr(stats, "unmeasured", 0),
+        total=stats.get("total", 0),
+        measured=stats.get("measured", 0),
+        unmeasured=stats.get("unmeasured", 0),
         best=best,
         runs=report.build_runs(session.entries),
         agent_calls=report.build_agent_calls(session.entries),
@@ -2268,7 +2334,8 @@ async def _build_report() -> dict:
     try:
         # Reading the candidate CSVs and walking the session blocks; off the
         # event loop so a large session does not stall everything else.
-        data = await asyncio.to_thread(_collect_report_data, lang)
+        stats = await _candidate_stats()
+        data = await asyncio.to_thread(_collect_report_data, lang, stats)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -2377,7 +2444,7 @@ async def session_new():
     if job and job.status in ("queued", "running"):
         return {"ok": False, "error": "A workflow is running — wait for it to finish."}
     try:
-        session = _start_session(app)
+        session = await _start_session(app)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "run_dir": session.run_dir}

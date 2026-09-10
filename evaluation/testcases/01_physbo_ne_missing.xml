@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="ackley"/>
+  </servers>
+  <candidates>
+    <parameter name="x1"/>
+    <parameter name="x2"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <repeat counter="i" times="5">
+      <nimo tool="selection" method="RE"/>
+      <nimo tool="update">
+        <call server="ackley" tool="ackley_function" x1="proposal.x1" x2="proposal.x2"/>
+      </nimo>
+    </repeat>
+    <repeat counter="j" times="5">
+      <nimo tool="selection" method="PHYSBO" minimization="true"/>
+      <nimo tool="update">
+        <call server="ackley" tool="ackley_function" x1="proposal.x1" x2="proposal.x2"/>
+      </nimo>
+    </repeat>
+  </workflow>
+</nimo-workflow>

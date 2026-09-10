@@ -5,8 +5,9 @@ dist/
 wheels/
 *.egg-info
 .venv
-
 .env
+
 proposals.csv
 fig/*.png
-nimo_mcp/results/
+*.trace
+evaluation/eval_data/*/results/*

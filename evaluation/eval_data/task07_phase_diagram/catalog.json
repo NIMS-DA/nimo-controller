@@ -1,0 +1,220 @@
+{
+  "tools": [
+    {
+      "server_id": "nimo",
+      "name": "get_parameter_names",
+      "description": "Return the input parameter names derived from candidates.csv.\n\nReturns an empty list if no candidates file has been loaded yet.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "selection",
+      "description": "Propose the next experimental parameters.\n\nRuns the specified algorithm on the current candidates and writes the\nresult to proposals.csv in the session directory.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "description": "Algorithm to use. RE, ES, DOE, BLOX and PDC search without\na direction to optimize toward; PHYSBO optimizes the\nobjective; PTR proposes candidates whose predicted objective\nfalls in a target range.",
+            "enum": [
+              "RE",
+              "ES",
+              "DOE",
+              "BLOX",
+              "PDC",
+              "PHYSBO",
+              "PTR"
+            ],
+            "type": "string"
+          },
+          "minimization": {
+            "default": false,
+            "type": "boolean",
+            "description": "True to optimize toward a smaller objective, False\nfor a larger one. Only meaningful for PHYSBO."
+          },
+          "ptr_lower": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Lower bound of the PTR target range. Omitted means\nunbounded below. Only meaningful for PTR."
+          },
+          "ptr_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Upper bound of the PTR target range. Omitted means\nunbounded above. Only meaningful for PTR."
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": {
+          "type": "number"
+        },
+        "type": "object"
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "update",
+      "description": "Record an experimental result and advance the optimization.\n\nWrites the objective value back into the run's candidates.csv\nand updates the nimo history.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "objs": {
+            "type": "number",
+            "description": "The observed objective value for the latest proposal."
+          }
+        },
+        "required": [
+          "objs"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_history_best",
+      "description": "Plot the best objective value found so far across iterations.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "description": "\"maximization\" to track the running highest value,\n\"minimization\" the running lowest. Set it to match the\ndirection of the selection that produced the data, or the\ncurve runs the wrong way.",
+            "enum": [
+              "maximization",
+              "minimization"
+            ],
+            "type": "string",
+            "default": "maximization"
+          }
+        },
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_convex_hull",
+      "description": "Plot how the convex hull area of the proposed parameters grew.\n\nThe area covered by all parameter points observed so far, per cycle \u2014\na diversity measure for selection algorithms such as BLOX. Only\navailable when there are exactly two parameters.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_distribution",
+      "description": "Plot the distribution of the measured objective values.\n\nA histogram for a single objective (a scatter for two, 3D scatter for\nthree). Reads the measured rows of the current run's candidates.csv.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "nimo",
+      "name": "plot_phase_diagram",
+      "description": "Plot the constructed phase diagram for the current run.\n\nReturns: Image file of the plot.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null
+    },
+    {
+      "server_id": "phase",
+      "name": "get_phase",
+      "description": "\u6307\u5b9a\u3055\u308c\u305f\u6e29\u5ea6\u30fb\u5727\u529b\u306b\u5bfe\u5fdc\u3059\u308b\u76f8\u3092\u6c42\u3081\u308b\n0: \u56fa\u76f8, 1: \u6db2\u76f8, 2: \u6c17\u76f8",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "temperature": {
+            "type": "number"
+          },
+          "pressure": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "temperature",
+          "pressure"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      }
+    }
+  ],
+  "parameters": [
+    "temperature",
+    "pressure"
+  ],
+  "objectives": [
+    "objective"
+  ],
+  "servers": {
+    "phase": {
+      "version": "0.0.1+7dae9df"
+    }
+  }
+}

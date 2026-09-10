@@ -265,15 +265,6 @@
     setStatus("");
   }
 
-  // =========================================================================
-  // API helper
-  // =========================================================================
-
-  /** Simple fetch wrapper for API calls. */
-  async function apiFetch(url, opts = {}) {
-    return fetch(url, opts);
-  }
-
   /**
    * Read an SSE response body, yielding {event, data} per frame.
    * EventSource cannot POST, so streams started with a POST are read here.
@@ -309,7 +300,6 @@
   const LOOP_COUNTER_KEY = "__loop_counter__";
 
   const safeSlug = (s) => String(s).trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_-]/g, "_");
-  const hueFromString = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = s.charCodeAt(i) + ((h << 5) - h); return Math.abs(h) % 360; };
   const toolStmtType = (sid, name) => `mcp__${safeSlug(sid)}__${safeSlug(name)}__stmt`;
   const nimoVarType = (name) => `nimo_var__${safeSlug(name)}`;
 
@@ -328,18 +318,16 @@
   // Distinct, muted colors for MCP servers (ordered to stay apart from the fixed category colors).
   const SCRATCH_SERVER_COLORS = ["#9585C2", "#BE7DBE", "#5FA6A0", "#CE8496", "#8E9ABF", "#B98F63", "#6EAE6E"];
   const NIMO_SEL_TYPE = "nimo_selection", NIMO_UPD_TYPE = "nimo_update";
-  // Direction-aware counterparts of selection; same shape, different nimo tool.
-  const NIMO_MAX_TYPE = "nimo_maximization", NIMO_MIN_TYPE = "nimo_minimization";
-  // Used only when /tools cannot be read — keep in step with the enums in
-  // nimo_tools.py (SelectionMethod / OptimizationMethod).
+  // PHYSBO and PTR: selection with a fixed method and an input of their own —
+  // a direction dropdown / the target-range sockets.
+  const NIMO_PHYSBO_METHOD = "PHYSBO";
+  const NIMO_PHYSBO_TYPE = "nimo_physbo";
+  const NIMO_PTR_TYPE = "nimo_selection_ptr";
+  // Used only when /tools cannot be read — keep in step with Method in
+  // nimo_mcp.py. The one selection tool covers all methods; the ones with a
+  // block of their own stay out of the plain selection dropdown.
   const FALLBACK_SELECTION_METHODS = ["RE", "ES", "DOE", "BLOX", "PDC"];
-  const FALLBACK_OPTIMIZATION_METHODS = ["PHYSBO", "NTS"];
-  // Block type -> the nimo tool it calls. One entry per method block.
-  const NIMO_METHOD_TOOLS = new Map([
-    [NIMO_SEL_TYPE, "selection"],
-    [NIMO_MAX_TYPE, "maximization"],
-    [NIMO_MIN_TYPE, "minimization"],
-  ]);
+  const DEDICATED_METHODS = new Set([NIMO_PHYSBO_METHOD, "PTR"]);
 
   // =========================================================================
   // Blockly — block definitions
@@ -387,8 +375,30 @@
     },
   };
 
+  Blockly.Blocks[NIMO_PTR_TYPE] = { init() {
+    this.appendDummyInput().appendField("selection (PTR)");
+    this.appendValueInput("ptr_lower").appendField("ptr_lower").setCheck("Number");
+    this.appendValueInput("ptr_upper").appendField("ptr_upper").setCheck("Number");
+    this.setPreviousStatement(true); this.setNextStatement(true); this.setColour(COLOR_NIMO);
+    this.setTooltip("Propose the candidate whose predicted objective most likely falls in [ptr_lower, ptr_upper].");
+  }};
+
+  // PHYSBO: selection with a fixed method and a direction dropdown. Static
+  // rather than built by defineNimoMethodBlock() — the method is fixed, so
+  // there is no server enum for it to track. MODE carries what used to be the
+  // identity of the maximization / minimization blocks; maximization comes
+  // first because that is nimo's own default (minimization=False).
+  Blockly.Blocks[NIMO_PHYSBO_TYPE] = { init() {
+    this.appendDummyInput().appendField("PHYSBO").appendField("mode")
+      .appendField(new Blockly.FieldDropdown(
+        [["maximization", "maximization"], ["minimization", "minimization"]]), "MODE");
+    this.setPreviousStatement(true); this.setNextStatement(true); this.setColour(COLOR_NIMO);
+    this.setTooltip("Propose the next candidate with PHYSBO, optimizing the objective toward "
+                    + "a larger value (maximization) or a smaller one (minimization).");
+  }};
+
   /**
-   * Define one "<label> method <dropdown>" nimo block.
+   * Define the "selection method <dropdown>" nimo block.
    *
    * Redefined on every toolbox build so the options track the enum the server
    * actually reports — hence a factory rather than a static Blockly.Blocks entry.
@@ -473,10 +483,15 @@
     const s = outputSchema;
     if (!s || typeof s !== "object") return false;
     if (s.type === "number" || s.type === "integer") return true;
-    // FastMCP wraps bare-scalar returns: {type:"object", properties:{result:{type}}, x-fastmcp-wrap-result:true}
-    if (s.type === "object" && s["x-fastmcp-wrap-result"] === true) {
-      const rt = s.properties?.result?.type;
-      return rt === "number" || rt === "integer";
+    // Wrapped bare scalar: fastmcp marks it ({type:"object", properties:{result:{type}},
+    // x-fastmcp-wrap-result:true}); the official SDK wraps without the marker, so a
+    // {result}-only object counts too — same rule as returns_number() in planner.py.
+    if (s.type === "object") {
+      const keys = Object.keys(s.properties || {});
+      if (s["x-fastmcp-wrap-result"] === true || (keys.length === 1 && keys[0] === "result")) {
+        const rt = s.properties?.result?.type;
+        return rt === "number" || rt === "integer";
+      }
     }
     return false;
   }
@@ -529,12 +544,13 @@
 
   /** Fetch tools from backend and rebuild the Blockly toolbox. */
   async function buildToolbox() {
-    const tools = await (await apiFetch("/tools")).json();
-    const optMethods = extractMethodEnum(tools, "maximization", FALLBACK_OPTIMIZATION_METHODS);
-    defineNimoMethodBlock(NIMO_SEL_TYPE, "selection",
-      extractMethodEnum(tools, "selection", FALLBACK_SELECTION_METHODS), FALLBACK_SELECTION_METHODS);
-    defineNimoMethodBlock(NIMO_MAX_TYPE, "maximization", optMethods, FALLBACK_OPTIMIZATION_METHODS);
-    defineNimoMethodBlock(NIMO_MIN_TYPE, "minimization", optMethods, FALLBACK_OPTIMIZATION_METHODS);
+    const tools = await (await fetch("/tools")).json();
+    // One selection tool carries every method; PHYSBO and PTR have blocks of
+    // their own, so the plain selection dropdown gets what is left.
+    const allMethods = extractMethodEnum(tools, "selection",
+      FALLBACK_SELECTION_METHODS.concat([NIMO_PHYSBO_METHOD]));
+    const selMethods = allMethods.filter((m) => !DEDICATED_METHODS.has(m));
+    defineNimoMethodBlock(NIMO_SEL_TYPE, "selection", selMethods, FALLBACK_SELECTION_METHODS);
 
     const xml = document.createElement("xml");
 
@@ -548,15 +564,23 @@
     // NIMO category — variable blocks first, then the method blocks and update.
     const nimo = document.createElement("category"); nimo.setAttribute("name", "nimo"); nimo.setAttribute("colour", COLOR_NIMO);
     try {
-      const pRes = await (await apiFetch("/nimo/parameters")).json();
+      const pRes = await (await fetch("/nimo/parameters")).json();
       if (pRes.ok) for (const p of pRes.parameters) { const b = document.createElement("block"); b.setAttribute("type", defineNimoVarBlock(p)); nimo.appendChild(b); }
     } catch (e) { logWarn("NIMO", `Parameters: ${e}`); }
-    for (const t of [NIMO_SEL_TYPE, NIMO_MAX_TYPE, NIMO_MIN_TYPE, NIMO_UPD_TYPE]) { const b = document.createElement("block"); b.setAttribute("type", t); nimo.appendChild(b); }
+    for (const t of [NIMO_SEL_TYPE, NIMO_PHYSBO_TYPE, NIMO_PTR_TYPE, NIMO_UPD_TYPE]) {
+      const b = document.createElement("block"); b.setAttribute("type", t);
+      if (t === NIMO_PTR_TYPE) for (const k of ["ptr_lower", "ptr_upper"]) b.appendChild(makeShadowXml(k, { type: "number" }));
+      nimo.appendChild(b);
+    }
     xml.appendChild(nimo);
 
     // Server categories (including non-hardcoded nimo tools)
-    const NIMO_HARDCODED = new Set(["selection", "maximization", "minimization", "update",
-                                    "get_parameter_names", "get_proposal", "reinitialize"]);
+    // Mirrors NIMO_HARDCODED in planner.py — dedicated blocks, or session
+    // plumbing the controller drives and no workflow should call.
+    const NIMO_HARDCODED = new Set(["selection", "update",
+                                    "get_parameter_names", "get_proposal", "reinitialize",
+                                    "start_session", "start_workflow",
+                                    "get_session_info", "get_candidate_stats"]);
 
     // Give each non-nimo MCP server a distinct Scratch colour (cycling the palette)
     // so different servers never look similar — used for the category tab and the
@@ -628,10 +652,25 @@
           else: exportChain(block.getInputTargetBlock("ELSE")) || [],
           block_id: block.id,
         });
-      } else if (NIMO_METHOD_TOOLS.has(block.type)) {
-        // All three method blocks share one shape; only the nimo tool differs.
-        out.push({ kind: "tool", server_id: "nimo", tool: NIMO_METHOD_TOOLS.get(block.type),
-                   args: { method: String(block.getFieldValue("METHOD")) }, block_id: block.id });
+      } else if (block.type === NIMO_PTR_TYPE) {
+        out.push({ kind: "tool", server_id: "nimo", tool: "selection",
+                   args: { method: "PTR",
+                           ptr_lower: exportValueExpr(block.getInputTargetBlock("ptr_lower")),
+                           ptr_upper: exportValueExpr(block.getInputTargetBlock("ptr_upper")) },
+                   block_id: block.id });
+      } else if (block.type === NIMO_PHYSBO_TYPE) {
+        // The method is the block itself; MODE is the direction. A real JSON
+        // boolean — a "false" string would be truthy on the Python side.
+        out.push({ kind: "tool", server_id: "nimo", tool: "selection",
+                   args: { method: NIMO_PHYSBO_METHOD,
+                           minimization: block.getFieldValue("MODE") === "minimization" },
+                   block_id: block.id });
+      } else if (block.type === NIMO_SEL_TYPE) {
+        // The direction-less methods; nimo ignores minimization for them, so
+        // the block does not offer it.
+        out.push({ kind: "tool", server_id: "nimo", tool: "selection",
+                   args: { method: String(block.getFieldValue("METHOD")) },
+                   block_id: block.id });
       } else if (block.type === NIMO_UPD_TYPE) {
         const inner = block.getInputTargetBlock("BODY");
         if (!inner) throw new Error("Put one tool that returns a float or int inside the update block.");
@@ -718,11 +757,6 @@
   // =========================================================================
   // Tool card UI (workflow execution logs)
   // =========================================================================
-
-  /** Convert a Blockly hue (0-360) to an HSL color string. */
-  function hueToColor(hue, s = 55, l = 50) {
-    return `hsl(${hue}, ${s}%, ${l}%)`;
-  }
 
   /**
    * Render a value as a readable DOM element.
@@ -1004,7 +1038,7 @@
   async function fetchWorkflowXml() {
     try {
       const ast = exportWorkflowAst();
-      const res = await apiFetch("/workflow/xml", {
+      const res = await fetch("/workflow/xml", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ workflow: ast }),
@@ -1042,14 +1076,9 @@
       const secs = ((Date.now() - execState.runStartedAt) / 1000).toFixed(1);
       setRunGroupLabel(`Workflow run — ${labels[status] || status}, `
                        + `${execState.runSteps} steps, ${secs} s`);
-      // A failed run stays open: folding the error away would hide the one
-      // thing worth reading.
-      if (status === "done" && execState.runGroup) {
-        execState.runGroup.setCollapsed(true);
-        // Collapsing takes a lot of height out of the log at once; land the
-        // view back at the bottom rather than wherever that left it.
-        jumpToLatest();
-      }
+      // The run stays open so its steps remain readable; the header click
+      // folds it manually. Just land the view on the completion card.
+      jumpToLatest();
       // In Auto mode the turn is still open, blocked in plan_workflow, and this
       // is the moment it resumes. Fired for every ending — a failed or canceled
       // run is reported too, not only a clean one.
@@ -1092,7 +1121,7 @@
     try { ast = exportWorkflowAst(); } catch (e) { setRunningUI(false); logError("Error", String(e)); return; }
     console.log("[NIMO] Exported AST:", JSON.stringify(ast, null, 2));
     try {
-      const res = await apiFetch("/workflow/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflow: ast, workspace_xml: exportWorkspaceXml() }) });
+      const res = await fetch("/workflow/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflow: ast, workspace_xml: exportWorkspaceXml() }) });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error);
       execState.workflowId = data.workflow_id; localStorage.setItem("workflow_id", data.workflow_id);
@@ -1103,16 +1132,16 @@
   async function cancelWorkflow() {
     const id = execState.workflowId || localStorage.getItem("workflow_id"); if (!id) return;
     logInfo("Cancel", "Cancellation requested");
-    try { await apiFetch(`/workflow/${id}/cancel`, { method: "POST" }); } catch (e) { logError("Cancel", String(e)); }
+    try { await fetch(`/workflow/${id}/cancel`, { method: "POST" }); } catch (e) { logError("Cancel", String(e)); }
   }
 
   // =========================================================================
   // Settings panel
   // =========================================================================
-  async function apiListServers() { return (await apiFetch("/settings/servers")).json(); }
-  async function apiAddServer(name, url) { return (await apiFetch("/settings/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, url }) })).json(); }
-  async function apiRemoveServer(name) { return (await apiFetch(`/settings/servers/${encodeURIComponent(name)}`, { method: "DELETE" })).json(); }
-  async function apiReconnectServer(name) { return (await apiFetch(`/settings/servers/${encodeURIComponent(name)}/reconnect`, { method: "POST" })).json(); }
+  async function apiListServers() { return (await fetch("/settings/servers")).json(); }
+  async function apiAddServer(name, url) { return (await fetch("/settings/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, url }) })).json(); }
+  async function apiRemoveServer(name) { return (await fetch(`/settings/servers/${encodeURIComponent(name)}`, { method: "DELETE" })).json(); }
+  async function apiReconnectServer(name) { return (await fetch(`/settings/servers/${encodeURIComponent(name)}/reconnect`, { method: "POST" })).json(); }
 
   function initSettingsPanel() {
     const panel = $("settingsPanel"); if (!panel) return;
@@ -1323,7 +1352,7 @@
   let _cfgCache = null;
   async function getConfig() {
     if (_cfgCache) return _cfgCache;
-    try { _cfgCache = await (await apiFetch("/config")).json(); } catch { _cfgCache = null; }
+    try { _cfgCache = await (await fetch("/config")).json(); } catch { _cfgCache = null; }
     return _cfgCache;
   }
 
@@ -1383,7 +1412,7 @@
     $("candidatesChooseBtn")?.addEventListener("click", () => $("csvFileInput")?.click());
     const openDataDir = async () => {
       try {
-        const r = await (await apiFetch("/nimo/open-data-dir", { method: "POST" })).json();
+        const r = await (await fetch("/nimo/open-data-dir", { method: "POST" })).json();
         if (!r.ok) throw new Error(r.error);
       } catch (e) { logError("Open", String(e)); }
     };
@@ -1399,7 +1428,7 @@
     const body = $("candBody");
     if (!body) return;
     try {
-      const r = await (await apiFetch("/nimo/candidates")).json();
+      const r = await (await fetch("/nimo/candidates")).json();
       if (r.ok && r.exists && r.content) {
         body.innerHTML = `<div class="candidates-subtitle">Preview</div>
           <div class="candidates-preview" id="candPreview"></div>`;
@@ -1484,7 +1513,7 @@
   async function loadAgentModels() {
     const label = $("agentProviderLabel"), select = $("agentModelSelect");
     try {
-      const d = await (await apiFetch("/agent/models")).json();
+      const d = await (await fetch("/agent/models")).json();
       if (!d.ok) throw new Error(d.error);
       if (label) label.textContent = d.provider || "";
       if (select) {
@@ -1526,7 +1555,7 @@
     const model = select?.value || "";
     const thinking = readThinking();
     try {
-      const res = await apiFetch("/agent/settings", {
+      const res = await fetch("/agent/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, thinking }),
@@ -1552,7 +1581,7 @@
   async function restoreAgentHistory() {
     let items = [];
     try {
-      const d = await (await apiFetch("/agent/history")).json();
+      const d = await (await fetch("/agent/history")).json();
       if (!d.ok) throw new Error(d.error);
       items = d.items || [];
     } catch (e) {
@@ -1593,7 +1622,7 @@
   /** Ask the server to stop the turn in flight. */
   async function cancelAgent() {
     try {
-      const d = await (await apiFetch("/agent/cancel", {
+      const d = await (await fetch("/agent/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Pressing Stop takes down the workflow this turn launched as well.
@@ -1876,7 +1905,7 @@
     const decide = async (approved) => {
       yes.disabled = no.disabled = true;
       try {
-        const d = await (await apiFetch("/agent/approve", {
+        const d = await (await fetch("/agent/approve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: callId, approved }),
@@ -1999,7 +2028,7 @@
     openBubble();
     msg.startWaiting();
     try {
-      const res = await apiFetch("/agent/chat", {
+      const res = await fetch("/agent/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Missing toggle falls back to auto, so a send can never hang on a
@@ -2121,7 +2150,7 @@
     path.title = "Open in file manager";
     const open = async () => {
       try {
-        const r = await (await apiFetch("/session/open", { method: "POST" })).json();
+        const r = await (await fetch("/session/open", { method: "POST" })).json();
         if (!r.ok) throw new Error(r.error);
       } catch (e) { logError("Session", String(e)); }
     };
@@ -2139,7 +2168,7 @@
    */
   async function showSessionOnLoad() {
     try {
-      const d = await (await apiFetch("/session")).json();
+      const d = await (await fetch("/session")).json();
       if (!d.ok || !d.active) return;
       showSessionCard(d.entries ? "Session in progress" : "New session started",
                       d.run_dir);
@@ -2153,7 +2182,7 @@
   async function newSession() {
     let runDir = "";
     try {
-      const d = await (await apiFetch("/session/new", { method: "POST" })).json();
+      const d = await (await fetch("/session/new", { method: "POST" })).json();
       if (!d.ok) throw new Error(d.error);
       runDir = d.run_dir || "";
     } catch (e) {
@@ -2162,7 +2191,7 @@
     }
     setLogPlaceholder("");
     if (agentState.enabled) {
-      try { await apiFetch("/agent/reset", { method: "POST" }); }
+      try { await fetch("/agent/reset", { method: "POST" }); }
       catch (e) { logError("Agent", `Failed to reset conversation: ${e}`); }
     }
     showSessionCard("New session started", runDir);
@@ -2191,7 +2220,7 @@
   let pendingXml = null;
   async function reattachIfRunning() {
     try {
-      const cur = await (await apiFetch("/workflow/current")).json();
+      const cur = await (await fetch("/workflow/current")).json();
       if (cur.ok && cur.exists && (cur.status === "running" || cur.status === "queued")) {
         pendingXml = cur.workspace_xml || null; execState.workflowId = cur.workflow_id;
         localStorage.setItem("workflow_id", cur.workflow_id); setRunningUI(true);
@@ -2219,7 +2248,7 @@
 
     busyStart("⏳");
     try {
-      const res = await apiFetch("/nimo/candidates", { method: "POST", body: form });
+      const res = await fetch("/nimo/candidates", { method: "POST", body: form });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error);
       logOk("Upload", data.message || `${file.name} uploaded`);
@@ -2235,7 +2264,23 @@
   // =========================================================================
   // Main
   // =========================================================================
+  /** Update the boot overlay's stage line while init runs. */
+  function bootStage(text) {
+    const el = document.getElementById("bootStage");
+    if (el) el.textContent = text;
+  }
+
   async function main() {
+    try {
+      await init();
+    } finally {
+      // Whether init finished, dead-ended on a toolbox error (the log shows
+      // it), or threw, the page is as ready as it will get.
+      document.getElementById("bootOverlay")?.remove();
+    }
+  }
+
+  async function init() {
     // Wire up buttons
     $("runBtn")?.addEventListener("click", async () => { if (execState.running) await cancelWorkflow(); else await runWorkflow(); });
     $("newSessionBtn")?.addEventListener("click", newSession);
@@ -2256,6 +2301,7 @@
     $("csvFileInput")?.addEventListener("change", handleCsvUpload);
 
     // Agent prompt below the log (only when enabled in config.yaml)
+    bootStage("connecting the agent…");
     await initAgentPrompt();
 
     // Leaving mid-turn loses it: an interrupted turn cannot be resumed, so warn
@@ -2303,14 +2349,16 @@
       });
     }
 
+    bootStage("loading tools…");
     try { await buildToolbox(); } catch (e) { setLogPlaceholder(`[Init Error] ${e}`); return; }
 
     // Leads the log, so the folder being written to is the first thing shown.
+    bootStage("restoring the session…");
     await showSessionOnLoad();
 
     // Check if NIMO has a candidates file loaded
     try {
-      const st = await (await apiFetch("/nimo/status")).json();
+      const st = await (await fetch("/nimo/status")).json();
       if (st.ok && !st.ready) {
         logWarn("NIMO", "No candidates file found. Click 'Upload candidates file' to add one and see where it is stored.");
       }

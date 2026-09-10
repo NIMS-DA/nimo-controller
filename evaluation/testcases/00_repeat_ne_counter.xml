@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="demo"/>
+  </servers>
+  <candidates>
+    <parameter name="x"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <repeat counter="i" times="4">
+      <call server="demo" tool="step" n="counter.i"/>
+    </repeat>
+  </workflow>
+</nimo-workflow>

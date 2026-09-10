@@ -1,18 +1,17 @@
-"""NIMO tools — in-process optimization backend for the NIMO Controller.
-
-This module bundles two things that used to live under ``nimo_mcp/``:
+"""NIMO tools — the optimization backend, served over MCP.
 
 * ``NimoWrapper`` — a plain-Python, stateful wrapper around the ``nimo``
   optimization library (candidates file, per-run result dirs, history).
-* ``LocalNimoClient`` — a thin adapter that presents the small subset of the
-  FastMCP ``Client`` interface ``server.py`` uses, but backed by direct calls
-  into the ``NimoWrapper`` singleton. No MCP server (HTTP subprocess or
-  persistent in-process client) is run for tool execution.
+* ``mcp`` — the FastMCP server exposing it.
 
-A FastMCP ``mcp`` object is still built so tool *schemas* can be snapshotted
-once at startup (``snapshot_nimo_tools``) — keeping ``/tools`` output identical
-to before — and so the module can optionally be run as a standalone MCP server
-(``python -m nimo_controller.nimo_tools``).
+This runs as its own process: the controller spawns it over stdio (see
+``nimo_client.py``), so nimo's ``sys.exit()`` paths, matplotlib's thread
+rules and the GIL it holds through a fit stay out of the app. Run it by hand
+with ``python -m nimo_controller.nimo_mcp`` (``--transport streamable-http``
+for HTTP instead).
+
+Under stdio the protocol owns the real stdout, so everything nimo prints is
+diverted to stderr before nimo is even imported — see the fd handling below.
 """
 
 from __future__ import annotations
@@ -23,13 +22,29 @@ import csv
 import io
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-# NIMO's plot tools run on a worker thread (LocalNimoClient.call_tool hands
-# every call to asyncio.to_thread), but matplotlib's default backend here is a
+# --- stdio transport: take fd 1 away from everything else --------------------
+# Under stdio the JSON-RPC frames own stdout, but nimo (and the compiled code
+# under it) prints freely, and one stray line corrupts the protocol.
+# redirect_stdout() cannot cover that: it only swaps sys.stdout, so it misses
+# import-time output and anything writing to the descriptor directly. So
+# before nimo is imported, move the real stdout aside and point fd 1 at
+# stderr. Every print, from Python or C, then lands on stderr, and the
+# protocol stream is reachable only through the saved descriptor — which only
+# _run_stdio() hands to the transport.
+_PROTO_FD: Optional[int] = None
+if __name__ == "__main__" and "streamable-http" not in sys.argv:
+    _PROTO_FD = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = os.fdopen(1, "w", buffering=1, errors="replace")
+
+# A selection runs on a worker thread (asyncio.to_thread, so the transport
+# stays responsive through a fit), but matplotlib's default backend here is a
 # GUI one — TkAgg on Windows — which must live on the main thread. The first
 # plot only warns; the second dies with "main thread is not in main loop" and
 # can take the process down with "Tcl_AsyncDelete: async handler deleted by the
@@ -44,7 +59,7 @@ except Exception:  # pragma: no cover - plotting simply stays as configured
     pass
 
 import nimo
-from fastmcp import Client, FastMCP
+from fastmcp import Client, Context, FastMCP
 from fastmcp.utilities.types import Image
 
 from .paths import CANDIDATES_FILE, RESULTS_DIR, ensure_user_dirs
@@ -62,26 +77,32 @@ def suppress_stdout():
         yield
 
 
-class SelectionMethod(str, Enum):
-    """Search algorithms with no notion of a direction to optimize toward."""
+class Method(str, Enum):
+    """Every proposal algorithm nimo offers.
+
+    RE/ES/DOE/BLOX/PDC search without a direction to optimize toward;
+    PHYSBO optimizes toward one and honors the ``minimization`` flag;
+    PTR targets an objective range given by ``ptr_lower`` / ``ptr_upper``.
+    """
     RE = "RE"
     ES = "ES"
     DOE = "DOE"
     BLOX = "BLOX"
     PDC = "PDC"
-
-
-class OptimizationMethod(str, Enum):
-    """Algorithms that optimize toward a direction (nimo's ``minimization``)."""
     PHYSBO = "PHYSBO"
-    NTS = "NTS"
+    PTR = "PTR"
+
+
+# The directional subset — keep in sync with DEDICATED_METHODS in frontend.js
+# and OPTIMIZATION_METHODS in planner.py.
+OPTIMIZATION_METHODS = {"PHYSBO"}
 
 
 class PlotMode(str, Enum):
     """Which way a progress curve should run.
 
     Spelled out rather than a boolean so the block and the agent read the same
-    words as the maximization / minimization blocks that produced the data.
+    words as the selection block direction that produced the data.
     """
     MAXIMIZATION = "maximization"
     MINIMIZATION = "minimization"
@@ -91,8 +112,12 @@ class PlotMode(str, Enum):
 # DOE are absent because they need no measurements (random / exhaustive /
 # design of experiments). When a requirement is unmet the call falls back to RE
 # rather than failing — nimo itself says "use RE for selection" in this case.
+# Minimums mirror where each nimo ai_tool actually crashes below: BLOX needs 3
+# because its RandomForest grid search uses 3-fold CV (ai_tool_blox.py, cv=3).
 FALLBACK_METHOD = "RE"
-_NEEDS_MEASURED = {"PDC", "BLOX", "PHYSBO", "NTS"}
+# PTR needs 2: it fits a physbo GP per objective and resolves "min"/"max"
+# range placeholders from the observed values.
+_MIN_MEASURED = {"PDC": 1, "BLOX": 3, "PHYSBO": 1, "PTR": 2}
 # PDC classifies phases, so a single observed value gives it nothing to
 # separate; nimo reaches a sys.exit() in that state (ai_tool_pdc.py:126-128).
 _NEEDS_TWO_PHASES = {"PDC"}
@@ -238,9 +263,10 @@ class NimoWrapper:
             self.notes.append(f"{FALLBACK_METHOD} was used instead of {name}: {reason}.")
             return FALLBACK_METHOD
 
-        if name in _NEEDS_MEASURED and stats.measured < 1:
-            return fall_back("it needs measured data to learn from, and no rows "
-                             "have been measured yet")
+        need = _MIN_MEASURED.get(name, 0)
+        if stats.measured < need:
+            return fall_back(f"it needs at least {need} measured rows to learn "
+                             f"from, found {stats.measured}")
         if name in _NEEDS_TWO_PHASES and stats.distinct < 2:
             return fall_back(f"it needs at least 2 distinct measured values to "
                              f"tell phases apart, found {stats.distinct}")
@@ -271,7 +297,7 @@ class NimoWrapper:
         self.iteration = 0
         return name
 
-    def start_session(self) -> str:
+    def start_session(self) -> Dict[str, Any]:
         """Begin a new session: a fresh folder and a clean optimization state.
 
         A session spans however many workflow runs the user makes — they all
@@ -280,10 +306,27 @@ class NimoWrapper:
         candidates.csv, so a freshly uploaded file takes effect here.
 
         Returns:
-            A confirmation message listing the parameter names.
+            The new run directory and the candidates columns it was built from.
         """
         self._init_from_candidates()
-        return f"New session with parameters: {self.parameter_names}"
+        return self.get_session_info()
+
+    def get_session_info(self) -> Dict[str, Any]:
+        """Return the current run directory and the candidates columns.
+
+        The controller renders these into the workflow XML and the report, and
+        reads the run directory's files directly, so they have to be readable
+        from outside this process.
+        """
+        return {"run_dir": self.run_dir,
+                "parameters": list(self.parameter_names),
+                "objectives": list(self.objective_names)}
+
+    def get_candidate_stats(self) -> Dict[str, int]:
+        """Return how much of candidates.csv has been measured."""
+        stats = self._candidate_stats()
+        return {"total": stats.total, "measured": stats.measured,
+                "unmeasured": stats.unmeasured, "distinct": stats.distinct}
 
     # ------------------------------------------------------------------
     # Tools
@@ -296,19 +339,22 @@ class NimoWrapper:
         """
         return self.parameter_names
 
-    def _select(self, method: str, minimization: Optional[bool] = None) -> Dict[str, float]:
+    def _select(self, method: str, minimization: Optional[bool] = None,
+                ptr_ranges: Optional[list] = None) -> Dict[str, float]:
         """Run one nimo selection and return the resulting proposal.
 
         The method is vetted against the data first — several algorithms crash
         or sys.exit() deep inside nimo when there is nothing to learn from, so
         they are swapped for RE instead (recorded in ``notes``).
 
-        ``minimization`` is left as None for the direction-less algorithms; nimo
-        treats None as False, so passing it either way would be harmless, but
-        omitting it keeps the call honest about which methods use it.
+        ``minimization`` / ``ptr_ranges`` are left as None for the methods
+        that do not use them; nimo would ignore them anyway, but omitting them
+        keeps the call honest about which methods use what.
         """
         self.notes = []
         method = self._resolve_method(method)
+        if method == FALLBACK_METHOD:
+            ptr_ranges = None                 # the fallback takes none
         with suppress_stdout():
             nimo.selection(
                 method=method,
@@ -317,46 +363,57 @@ class NimoWrapper:
                 num_objectives=self.n_objectives,
                 num_proposals=self.n_proposals,
                 minimization=minimization,
+                ptr_ranges=ptr_ranges,
             )
         return self.get_proposal()
 
-    def selection(self, method: SelectionMethod) -> Dict[str, float]:
-        """Select the next experimental parameters by search, without optimizing.
+    async def selection(self, method: Method, minimization: bool = False,
+                        ptr_lower: Optional[float] = None,
+                        ptr_upper: Optional[float] = None,
+                        ctx: Optional[Context] = None) -> Dict[str, float]:
+        """Propose the next experimental parameters.
 
         Runs the specified algorithm on the current candidates and writes the
-        result to proposals.csv in the session directory. These algorithms do
-        not optimize toward a direction — use maximization or minimization for
-        that.
+        result to proposals.csv in the session directory.
 
         Args:
-            method: Algorithm to use (RE, ES, DOE, BLOX or PDC).
+            method: Algorithm to use. RE, ES, DOE, BLOX and PDC search without
+                a direction to optimize toward; PHYSBO optimizes the
+                objective; PTR proposes candidates whose predicted objective
+                falls in a target range.
+            minimization: True to optimize toward a smaller objective, False
+                for a larger one. Only meaningful for PHYSBO.
+            ptr_lower: Lower bound of the PTR target range. Omitted means
+                unbounded below. Only meaningful for PTR.
+            ptr_upper: Upper bound of the PTR target range. Omitted means
+                unbounded above. Only meaningful for PTR.
 
         Returns:
             A dictionary mapping each parameter name to its proposed value.
         """
-        return self._select(method)
+        name = str(getattr(method, "value", method))
+        if name in OPTIMIZATION_METHODS:
+            call = lambda: self._select(  # noqa: E731
+                method, minimization=bool(minimization))
+        elif name == "PTR":
+            # nimo resolves the "min" / "max" placeholders to the observed
+            # extremes, i.e. an omitted bound does not constrain that side.
+            ranges = [[ptr_lower if ptr_lower is not None else "min",
+                       ptr_upper if ptr_upper is not None else "max"]]
+            call = lambda: self._select(method, ptr_ranges=ranges)  # noqa: E731
+        else:
+            call = lambda: self._select(method)  # noqa: E731
 
-    def maximization(self, method: OptimizationMethod) -> Dict[str, float]:
-        """Propose the next parameters, optimizing toward a larger objective.
-
-        Args:
-            method: Algorithm to use (PHYSBO or NTS).
-
-        Returns:
-            A dictionary mapping each parameter name to its proposed value.
-        """
-        return self._select(method, minimization=False)
-
-    def minimization(self, method: OptimizationMethod) -> Dict[str, float]:
-        """Propose the next parameters, optimizing toward a smaller objective.
-
-        Args:
-            method: Algorithm to use (PHYSBO or NTS).
-
-        Returns:
-            A dictionary mapping each parameter name to its proposed value.
-        """
-        return self._select(method, minimization=True)
+        # Off the event loop: a GP fit holds the interpreter for seconds, and
+        # the transport still has to answer pings and cancellations.
+        proposal = await asyncio.to_thread(call)
+        # A silent method substitution would be misleading, and the return
+        # value is the proposal itself — so it travels as an MCP log message,
+        # which the controller shows beside the step.
+        if ctx is not None:
+            for note in self.notes:
+                await ctx.info(note)
+        return proposal
 
     def get_proposal(self) -> Dict[str, float]:
         """Return the most recently proposed parameter values.
@@ -406,8 +463,8 @@ class NimoWrapper:
         Args:
             mode: "maximization" to track the running highest value,
                 "minimization" the running lowest. Set it to match the
-                maximization / minimization block that produced the data, or
-                the curve runs the wrong way.
+                direction of the selection that produced the data, or the
+                curve runs the wrong way.
 
         Returns: Image file of the plot.
         """
@@ -421,6 +478,43 @@ class NimoWrapper:
                 fig_folder=self.run_dir,
                 filename=filename,
                 minimization=(mode == PlotMode.MINIMIZATION),
+            )
+        return Image(path=os.path.join(self.run_dir, filename))
+
+    def plot_convex_hull(self) -> Image:
+        """Plot how the convex hull area of the proposed parameters grew.
+
+        The area covered by all parameter points observed so far, per cycle —
+        a diversity measure for selection algorithms such as BLOX. Only
+        available when there are exactly two parameters.
+
+        Returns: Image file of the plot.
+        """
+        filename = "convex_hull.png"
+        with suppress_stdout():
+            nimo.visualization.plot_history.convex_hull(
+                input_file=self.res_history,
+                num_cycles=self.iteration,
+                fig_folder=self.run_dir,
+                filename=filename,
+            )
+        return Image(path=os.path.join(self.run_dir, filename))
+
+    def plot_distribution(self) -> Image:
+        """Plot the distribution of the measured objective values.
+
+        A histogram for a single objective (a scatter for two, 3D scatter for
+        three). Reads the measured rows of the current run's candidates.csv.
+
+        Returns: Image file of the plot.
+        """
+        filename = "distribution.png"
+        with suppress_stdout():
+            nimo.visualization.plot_distribution.plot(
+                input_file=self._run_candidates_file(),
+                num_objectives=self.n_objectives,
+                fig_folder=self.run_dir,
+                filename=filename,
             )
         return Image(path=os.path.join(self.run_dir, filename))
 
@@ -442,115 +536,54 @@ class NimoWrapper:
 # Module-level singleton used for direct in-process calls.
 wrapper = NimoWrapper()
 
-# FastMCP object — used only to snapshot tool schemas at startup and to allow
-# running this module as a standalone MCP server (see __main__ below).
+# FastMCP object — the server behind `python -m nimo_controller.nimo_mcp`.
 #
-# Deliberately absent, so neither the Blockly toolbox nor the chat agent sees them:
-#   start_session — when a session begins is the app's decision, not the model's
-#   get_proposal  — plumbing that reads one row of proposals.csv; only meaningful
-#                   immediately after selection()
-# Both stay callable in-process: LocalNimoClient.call_tool resolves by getattr,
-# not through this registration, so _resolve_nimo_vars still works.
+# The second group is session plumbing the controller drives: it has to be
+# reachable over the transport, but neither the Blockly toolbox nor the chat
+# agent should offer it, so those names are also listed in NIMO_HARDCODED
+# (planner.py) and its frontend.js twin, which keeps them off the toolbox and
+# out of the planner's catalog.
 mcp = FastMCP("NIMO MCP controller")
 mcp.tool(wrapper.get_parameter_names)
 mcp.tool(wrapper.selection)
-mcp.tool(wrapper.maximization)
-mcp.tool(wrapper.minimization)
 mcp.tool(wrapper.update)
 mcp.tool(wrapper.plot_history_best)
+mcp.tool(wrapper.plot_convex_hull)
+mcp.tool(wrapper.plot_distribution)
 mcp.tool(wrapper.plot_phase_diagram)
 
-
-# ---------------------------------------------------------------------------
-# In-process client adapter (replaces the FastMCP Client for NIMO)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _ToolMeta:
-    """Mimics a FastMCP tool object for ``list_tools()`` consumers."""
-    name: str
-    description: str
-    inputSchema: dict
-    outputSchema: Any = None
-    execution: Any = None  # _attr(t, "execution") -> None -> taskSupport "forbidden"
+mcp.tool(wrapper.start_session)
+mcp.tool(wrapper.start_workflow)
+mcp.tool(wrapper.get_session_info)
+mcp.tool(wrapper.get_candidate_stats)
+mcp.tool(wrapper.get_proposal)
 
 
-@dataclass
-class _Result:
-    """Mimics a FastMCP call result: ``.data`` plus optional image ``.content``.
+async def _run_stdio(proto_fd: int, log_level: str = "WARNING") -> None:
+    """Serve on stdio, writing frames to *proto_fd* rather than sys.stdout.
 
-    ``notes`` has no MCP counterpart — it carries wrapper messages (currently
-    algorithm substitutions) out to the caller so they can reach the log.
+    FastMCP's own stdio runner takes the protocol stream from sys.stdout,
+    which here deliberately points at stderr so nimo's prints are harmless.
+    This mirrors run_stdio_async() with the stream passed in instead.
     """
-    data: Any = None
-    content: Optional[list] = None
-    notes: Optional[list] = None
+    import logging
+    from io import TextIOWrapper
 
+    import anyio
+    from mcp.server.stdio import stdio_server
 
-class LocalNimoClient:
-    """Direct-call replacement for the NIMO FastMCP ``Client``.
+    # The parent shows this server's stderr, so keep it to what it needs to
+    # hear; per-message tracing is not that.
+    logging.basicConfig(level=getattr(logging, log_level.upper(), logging.WARNING),
+                        stream=sys.stderr, force=True)
 
-    Implements just the surface ``server.py`` uses: ``call_tool``,
-    ``list_tools``, ``initialize_result`` and the async-context-manager
-    protocol. Never advertises task capability (``initialize_result = None``),
-    so the workflow engine falls through to the plain call path for NIMO.
-    """
-
-    initialize_result = None  # -> _supports_tasks(client) returns False
-
-    def __init__(self, wrapper: Any, tools: list[_ToolMeta]):
-        self._wrapper = wrapper
-        self._tools = tools
-
-    async def __aenter__(self) -> "LocalNimoClient":
-        return self
-
-    async def __aexit__(self, *exc) -> bool:
-        return False
-
-    async def list_tools(self) -> list[_ToolMeta]:
-        return self._tools
-
-    async def call_tool(self, name: str, args: Optional[dict] = None, task: bool = False) -> _Result:
-        fn = getattr(self._wrapper, name, None)
-        if not callable(fn):
-            raise KeyError(f"Unknown NIMO tool: {name}")
-        # NIMO methods are synchronous (and some are slow) — run off the event loop.
-        result = await asyncio.to_thread(fn, **(args or {}))
-        # Taken, not copied, so a note can never carry over to the next call.
-        notes = self._wrapper.notes or None
-        self._wrapper.notes = []
-
-        # Plot tools return a fastmcp Image; convert to MCP-style image content
-        # so server.extract_images() can read it unchanged.
-        if isinstance(result, Image):
-            ic = await asyncio.to_thread(result.to_image_content)
-            return _Result(data=None, notes=notes, content=[{
-                "type": "image",
-                "data": getattr(ic, "data", ""),
-                "mimeType": getattr(ic, "mimeType", "image/png"),
-            }])
-        return _Result(data=result, notes=notes)
-
-
-async def snapshot_nimo_tools(mcp_obj: Any = mcp) -> list[_ToolMeta]:
-    """Read the NIMO tool schemas once via a transient in-memory FastMCP client.
-
-    This does NOT start a server or subprocess — it is an in-process handshake
-    against the already-built ``mcp`` object — and yields the same schema data
-    the old ``client_nimo.list_tools()`` produced.
-    """
-    async with Client(mcp_obj) as c:
-        tools = await c.list_tools()
-        return [
-            _ToolMeta(
-                name=t.name,
-                description=t.description or "",
-                inputSchema=t.inputSchema,
-                outputSchema=getattr(t, "outputSchema", None),
-            )
-            for t in tools
-        ]
+    stdout = anyio.wrap_file(TextIOWrapper(os.fdopen(proto_fd, "wb"),
+                                           encoding="utf-8", line_buffering=True))
+    server = mcp._mcp_server
+    async with mcp._lifespan_manager():
+        async with stdio_server(stdout=stdout) as (read_stream, write_stream):
+            await server.run(read_stream, write_stream,
+                             server.create_initialization_options())
 
 
 if __name__ == "__main__":
@@ -566,7 +599,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="localhost", help="HTTP bind host (default: localhost)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP bind port (default: 8000)")
     parser.add_argument("--path", default="/mcp", help="HTTP mount path (default: /mcp)")
-    parser.add_argument("--log-level", default="INFO", help="Log level (default: INFO)")
+    parser.add_argument("--log-level", default="WARNING",
+                        help="Log level (default: WARNING)")
     args = parser.parse_args()
 
     if args.transport == "streamable-http":
@@ -578,4 +612,6 @@ if __name__ == "__main__":
             log_level=args.log_level,
         )
     else:
-        mcp.run(transport="stdio", log_level=args.log_level)
+        # _PROTO_FD is the real stdout, saved before nimo could print to it.
+        assert _PROTO_FD is not None
+        asyncio.run(_run_stdio(_PROTO_FD, args.log_level))

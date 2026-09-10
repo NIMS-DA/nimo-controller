@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nimo-workflow version="0.0.4">
+  <servers>
+    <server name="milk">
+      <tool name="set_height" params="{height: float}"/>
+      <tool name="set_volume" params="{volume: float}"/>
+      <tool name="aspirate_milk"/>
+      <tool name="drop_milk"/>
+      <tool name="analyze_result"/>
+    </server>
+  </servers>
+  <candidates>
+    <parameter name="volume"/>
+    <parameter name="height"/>
+    <objective name="objective"/>
+  </candidates>
+  <workflow>
+    <repeat counter="i" times="30">
+      <if counter="i" op="&lt;" value="10">
+        <then><nimo tool="selection" method="RE"/></then>
+        <else><nimo tool="selection" method="PDC"/></else>
+      </if>
+      <call server="milk" tool="set_volume" volume="proposal.volume"/>
+      <call server="milk" tool="aspirate_milk"/>
+      <call server="milk" tool="set_height" height="proposal.height"/>
+      <call server="milk" tool="drop_milk"/>
+      <nimo tool="update">
+        <call server="milk" tool="analyze_result"/>
+      </nimo>
+    </repeat>
+    <nimo tool="plot_phase_diagram"/>
+  </workflow>
+</nimo-workflow>

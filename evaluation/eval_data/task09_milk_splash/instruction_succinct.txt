@@ -1,0 +1,1 @@
+Map the phase diagram of the milk-drop experiment in 30 cycles: the first 10 cycles use RE selection, the remaining 20 use PDC selection. Each cycle: set the volume to the proposed volume, aspirate the milk, set the height to the proposed height, drop the milk, then evaluate analyze_result and update the objective. Finally, plot the phase diagram.

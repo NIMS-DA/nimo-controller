@@ -1,0 +1,1 @@
+Map the phase diagram of the coffee-ring experiment in 20 cycles: the first 5 cycles use RE selection, the remaining 15 use PDC selection. Each cycle: load the plate, prepare the sample with the proposed pva and dtab, heat the plate, then evaluate get_image and update the objective, and finally place the plate. Finally, plot the phase diagram.

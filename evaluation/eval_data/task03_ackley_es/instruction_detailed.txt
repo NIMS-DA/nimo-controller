@@ -1,0 +1,1 @@
+We will run an experiment that samples the Ackley function for 20 iterations. In every iteration, choose the next candidate using the selection tool with the ES (exhaustive search) method, then evaluate the ackley_function tool with the proposed values of x1 and x2 and update with the returned value. After all 20 cycles are finished, plot the distribution.

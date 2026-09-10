@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import uvicorn
 import yaml
 
@@ -28,12 +27,8 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Bind port (overrides config.yaml)")
-    parser.add_argument("--config", default=None, help="Path to config.yaml")
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload (dev)")
     args = parser.parse_args()
-
-    if args.config:
-        os.environ["NIMO_CONFIG"] = args.config
 
     ensure_user_dirs()
 

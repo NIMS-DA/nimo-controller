@@ -10,22 +10,17 @@ cd nimo-controller
 uv sync
 ```
 
-Alternatively, install using pip:
-```
-pip install nimo-controller
-```
-
 ## Examples
 
 ### Bayesian optimization
 
-The `example_mcp/ackley` directory contains an example MCP server that demonstrates how to use PHYSBO with the [Ackley function](https://en.wikipedia.org/wiki/Ackley_function).
+The `example_mcp/optimization` directory contains an example MCP server that implements the two-dimensional [test functions for optimization](https://en.wikipedia.org/wiki/Test_functions_for_optimization).
 
 Start the MCP server:
 
 ```
-cd example_mcp/ackley
-uv run mcp_ackley.py
+cd example_mcp/optimization
+uv run mcp_test_function.py
 ```
 
 In a separate terminal, launch NIMO Controller:
@@ -36,59 +31,34 @@ uv run nimo-controller
 ```
 
 Then open `http://127.0.0.1:8888/` in your browser.
-At this point you will see a warning indicating that no candidates file has been loaded yet.
+You will see an empty screen. The agent text box will appear when `enable_agent` is set `true` in the configuration.
 
-![screenshot1](./fig/screenshot1.png)
+![screenshot1](./screenshots/screenshot1.png)
 
-Click the `Upload candidates file` button and upload `example_mcp/ackley/candidates.csv`.
+First, you need to add the MCP server. Click `Manage MCP servers` button and type a name for MCP server and `http://127.0.0.1:8001/mcp` as its URL. 
+
+![screenshot2](./screenshots/screenshot2.png)
+
+Click the `Upload candidates file` button and upload `example_mcp/optimization/candidates.csv`.
 Once uploaded, the `x1` and `x2` blocks will appear in the NIMO toolbox.
 
-![screenshot2](./fig/screenshot2.png)
+![screenshot3](./screenshots/screenshot3.png)
 
 Use the blocks to build the workflow shown below:
 
-![screenshot3](./fig/screenshot3.png)
+![screenshot4](./screenshots/screenshot4.png)
 
 Press the `Run` button to execute the workflow.
 
-![screenshot4](./fig/screenshot4.png)
-
-Note that the target is the *negated* Ackley function, since PHYSBO performs maximization.
-
-The same example is also provided written against the official MCP SDK, using plain decorated functions rather than an SDL class:
-
-```
-cd example_mcp/ackley
-uv run mcp_ackley_sdk.py
-```
-
-It serves the same tool on the same port and uses the same candidates file, so the workflow above is unchanged — run one server or the other.
-
-### Phase diagram construction
-
-The `example_mcp/phase_diagram` directory contains an example MCP server that demonstrates the PDC algorithm by constructing a phase diagram for the fictional material X described in the [IvoryOS integration guide](https://nims-da.github.io/nimo/en/ivoryos.html).
-
-Start the MCP server:
-
-```
-cd example_mcp/phase_diagram
-uv run mcp_phase_diagram.py
-```
-
-Restart NIMO Controller, then upload `example_mcp/phase_diagram/candidates.csv` via the `Upload candidates file` button.
-
-Build the workflow shown below. After running the workflow, a phase diagram will be constructed.
-
-![screenshot5](./fig/screenshot5.png)
+![screenshot5](./screenshots/screenshot5.png)
 
 ## Configuration
 
 Configuration is loaded from the following sources, in order of precedence:
 
-1. The path specified by `--config <path>`
-2. `./config.yaml` in the current directory
-3. `<user-config-dir>/nimo-controller/config.yaml` (for example, `~/.config/nimo-controller/config.yaml`)
-4. The default configuration bundled with the package
+1. `./config.yaml` in the current directory
+2. `<user-config-dir>/nimo-controller/config.yaml` (for example, `~/.config/nimo-controller/config.yaml`)
+3. Built-in defaults (used when no config file exists)
 
 Example `config.yaml`:
 
@@ -98,9 +68,13 @@ port: 8888
 mcp_servers:
   sdl: "http://127.0.0.1:8001/mcp"
 
+enable_agent: true
+
+agent:
+  provider: ollama
+  base_url: "http://127.0.0.1:11434/v1"
+
 # Optional: where candidates.csv and results/ are stored.
 # Defaults to ~/.nimo-controller if omitted.
 # data_dir: "~/my-nimo-data"
 ```
-
-Runtime data — the uploaded `candidates.csv` and the optimization `results/` — is written to `~/.nimo-controller/` by default, regardless of where you launch the app from. You can change this by setting `data_dir` in `config.yaml`. The exact location is also shown in the UI when you click **Upload candidates file**.

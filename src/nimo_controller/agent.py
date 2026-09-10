@@ -75,7 +75,8 @@ SYSTEM_PROMPT = (
     "condition on the cycle number. That tool designs the whole procedure and "
     "lays it out as blocks in the Blockly workspace. It does not execute "
     "anything itself.\n\n"
-    "Anything involving nimo's optimizer — selection, maximization, minimization, "
+    "Anything involving nimo's optimizer — selection, maximizing or minimizing "
+    "the objective with PHYSBO, "
     "feeding a measurement back as an objective value, \"optimize\", \"N cycles\" — "
     "must go through plan_workflow. Those steps cannot be issued as single tool "
     "calls.\n\n"
@@ -647,9 +648,29 @@ class AgentRuntime:
         self._workflow_attempts += 1
 
         catalog = build_catalog(await self.list_tools(), await self.list_parameters())
+
+        async def forward_thinking(ctx: Any, events: Any) -> None:
+            # Surface the planner's reasoning in the chat as it streams; the
+            # page's existing "thinking" branch renders it in a collapsible
+            # bubble after the tool card. The workflow JSON itself is not
+            # forwarded — the "workflow" event below carries the result.
+            async for ev in events:
+                if isinstance(ev, PartStartEvent) and isinstance(ev.part, ThinkingPart):
+                    text = getattr(ev.part, "content", "") or ""
+                elif (isinstance(ev, PartDeltaEvent)
+                      and isinstance(ev.delta, ThinkingPartDelta)):
+                    text = getattr(ev.delta, "content_delta", "") or ""
+                else:
+                    continue
+                if text:
+                    self.emit("thinking", {"text": text})
+
         try:
-            workflow = await write_workflow(instruction, catalog,
-                                            self._build_model(), usage=usage)
+            workflow = await write_workflow(
+                instruction, catalog, self._build_model(), usage=usage,
+                model_settings=(ModelSettings(thinking=self.thinking)
+                                if self.thinking is not None else None),
+                event_stream_handler=forward_thinking)
         except UnexpectedModelBehavior as e:
             # No retry here: the planner already exhausted its own. Reporting
             # the failure lets the model fall back to direct tool calls.

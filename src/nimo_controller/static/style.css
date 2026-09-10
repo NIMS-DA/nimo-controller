@@ -1000,3 +1000,22 @@ body {
   .log-card__result--true  { background: #22c55e }
   .log-card__result--false { background: #f87171 }
 }
+/* Boot overlay - visible from first paint until main() finishes. Blocks
+   interaction so nothing (e.g. Run) can be clicked before the toolbox and
+   session state are in. */
+#bootOverlay {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, .75); backdrop-filter: blur(1px);
+}
+.boot-msg {
+  font-size: 18px; color: #374151; text-align: center;
+  animation: boot-pulse 1.6s ease-in-out infinite;
+}
+.boot-stage { margin-top: 6px; font-size: 13px; color: #6b7280 }
+@keyframes boot-pulse { 50% { opacity: .55 } }
+@media (prefers-color-scheme: dark) {
+  #bootOverlay { background: rgba(17, 17, 17, .75) }
+  .boot-msg { color: #d1d5db }
+  .boot-stage { color: #9ca3af }
+}
