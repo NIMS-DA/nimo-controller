@@ -24,6 +24,23 @@
   // scrolling back to check an earlier step gets undone by the next event.
   const LOG_STICK_SLACK = 40;   // close enough to the bottom to count as "at the bottom"
 
+  // Whether the log is tracking the newest entry.
+  //
+  // Held as state rather than measured at each append, because a measurement
+  // cannot tell a reader who scrolled away from an entry that grew after it was
+  // written — a tool card filling in its output, a row reflowing as it is moved
+  // into a run box, an image finishing its decode. Each of those measures as
+  // "not at the bottom", so the first one used to switch following off for the
+  // rest of the run and raise the "↓ Latest" button as though the reader had
+  // scrolled.
+  //
+  // Only a scroll event re-decides it. Scroll events fire for a gesture and for
+  // our own write, and never for content that merely grew, so growth can no
+  // longer be read as intent. Our own write always targets the very bottom, so
+  // the state it re-derives is "following" — no self-scroll bookkeeping needed.
+  let logFollow = true;
+  let logStickFrame = 0;   // coalesces a burst of changes into one re-stick
+
   /** True when the log is scrolled to the bottom — or too short to scroll. */
   function isLogAtBottom(el) {
     if (!el) return true;
@@ -31,14 +48,54 @@
   }
 
   /**
-   * Follow the newest entry, but only if the reader had not scrolled away.
+   * Re-decide, from a scroll event, whether the log is following.
    *
-   * Sample `isLogAtBottom` *before* appending: afterwards `scrollHeight` has
-   * already grown by the new row, so the check would always say "no".
+   * Every scroll event is taken at face value, including the ones the browser
+   * raises for itself. Growing the content fires none: appending below the
+   * viewport does not move scrollTop, and when scroll anchoring or a clamp does
+   * move it, it moves by however much the content above grew or shrank — which
+   * leaves the distance from the bottom, and so the verdict here, unchanged.
+   * That leaves the reader as the only thing this can hear.
    */
-  function stickLog(el, wasAtBottom) {
-    if (el && wasAtBottom) el.scrollTop = el.scrollHeight;
-    updateJumpLatest(el);
+  function syncLogFollow() {
+    const log = logEl();
+    if (!log) return;
+    logFollow = isLogAtBottom(log);
+    updateJumpLatest(log);
+  }
+
+  /** Keep the newest entry in view, if that is where the reader is. */
+  function stickLog() {
+    const log = logEl();
+    if (!log) return;
+    // Writing the same value back is a no-op that fires no scroll event, so a
+    // frame in which nothing actually moved cannot feed itself.
+    if (logFollow) log.scrollTop = log.scrollHeight;
+    updateJumpLatest(log);
+  }
+
+  /** Follow the newest entry once per frame, however many changes arrived. */
+  function scheduleStickLog() {
+    if (logStickFrame) return;
+    logStickFrame = requestAnimationFrame(() => { logStickFrame = 0; stickLog(); });
+  }
+
+  /**
+   * Watch the log for content that changes height after it was written.
+   *
+   * The append helpers cannot see these for themselves: a tool card's output
+   * replacing its "running…" placeholder, a row reflowing taller as it is moved
+   * into a run box. Not everything, though — an image decoding and a webfont
+   * swapping in change the layout without touching the DOM, so those still need
+   * their own re-stick.
+   */
+  function observeLogGrowth() {
+    const log = logEl();
+    if (!log || typeof MutationObserver !== "function") return;
+    // The "↓ Latest" button is a sibling of #log, not a child, so showing and
+    // hiding it cannot re-trigger this.
+    new MutationObserver(scheduleStickLog)
+      .observe(log, { childList: true, subtree: true, characterData: true });
   }
 
   /**
@@ -46,17 +103,22 @@
    *
    * Without it, scrolling up during a run looks like the run has stopped —
    * entries keep arriving with nothing on screen to say so.
+   *
+   * Keyed on the follow state, not on position alone: mid-growth the position
+   * says "away from the bottom" for a frame, and a button that blinks once per
+   * appended row is worse than no button.
    */
   function updateJumpLatest(el) {
     const log = el || logEl();
     const btn = $("logJumpLatest");
     if (!log || !btn) return;
-    btn.hidden = isLogAtBottom(log);
+    btn.hidden = logFollow || isLogAtBottom(log);
   }
 
   function jumpToLatest() {
     const log = logEl();
     if (!log) return;
+    logFollow = true;   // asking for the newest entry means asking to keep it
     log.scrollTop = log.scrollHeight;
     updateJumpLatest(log);
   }
@@ -73,6 +135,7 @@
   function setLogPlaceholder(text) {
     const el = logEl();
     if (!el) return;
+    logFollow = true;   // an empty log has no history to hold the reader back
     el.classList.add("log-placeholder");
     el.innerHTML = '<div class="chat-placeholder"></div>';
     const ph = el.querySelector(".chat-placeholder");
@@ -83,7 +146,6 @@
   function appendRow(role, className, text) {
     const el = logEl();
     if (!el) return;
-    const stick = isLogAtBottom(el);
     clearLogPlaceholder();
     const row = document.createElement("div");
     row.className = `chat-row ${role}`;
@@ -92,7 +154,7 @@
     box.textContent = String(text ?? "");
     row.appendChild(box);
     el.appendChild(row);
-    stickLog(el, stick);
+    stickLog();
     return box;
   }
 
@@ -102,13 +164,12 @@
   function appendChatEl(role, el) {
     const log = logEl();
     if (!log) return null;
-    const stick = isLogAtBottom(log);
     clearLogPlaceholder();
     const row = document.createElement("div");
     row.className = `chat-row ${role}`;
     row.appendChild(el);
     log.appendChild(row);
-    stickLog(log, stick);
+    stickLog();
     return el;
   }
 
@@ -126,7 +187,6 @@
   function logCard(level, title, message, opts) {
     const log = logEl();
     if (!log) return null;
-    const stick = isLogAtBottom(log);
     clearLogPlaceholder();
     const row = document.createElement("div"); row.className = "chat-row system";
     const card = document.createElement("div"); card.className = `log-card log-card--${level}`;
@@ -164,7 +224,7 @@
       }
       card.appendChild(line);
     }
-    row.appendChild(card); log.appendChild(row); stickLog(log, stick);
+    row.appendChild(card); log.appendChild(row); stickLog();
     return card;
   }
 
@@ -453,9 +513,14 @@
     });
   } catch (e) { _scratchTheme = undefined; }
 
+  // Without an explicit `move`, Blockly leaves `wheel` off, so the mouse wheel
+  // does not scroll the workspace at all. Passing `move` also stops `scrollbars`
+  // being inferred from the toolbox, so all three are named here.
+  const WORKSPACE_MOVE = { scrollbars: true, drag: true, wheel: true };
+
   const workspace = Blockly.inject("workspace",
-    _scratchTheme ? { toolbox: makeInitialToolbox(), theme: _scratchTheme }
-                  : { toolbox: makeInitialToolbox() });
+    _scratchTheme ? { toolbox: makeInitialToolbox(), theme: _scratchTheme, move: WORKSPACE_MOVE }
+                  : { toolbox: makeInitialToolbox(), move: WORKSPACE_MOVE });
 
   // XML helpers
   function exportWorkspaceXml() { return (Blockly.utils?.xml?.domToText || Blockly.Xml.domToText)(Blockly.Xml.workspaceToDom(workspace)); }
@@ -810,7 +875,6 @@
   function appendToolCard({ server, tool, args, when }) {
     const log = logEl();
     if (!log) return null;
-    const stick = isLogAtBottom(log);
     clearLogPlaceholder();
     const row = document.createElement("div"); row.className = "chat-row system";
     const card = document.createElement("div"); card.className = "tool-card";
@@ -846,8 +910,9 @@
     outBlock.appendChild(outSpinner);
     // Images
     const imgBox = document.createElement("div"); imgBox.className = "tool-images"; imgBox.dataset.role = "images";
-    card.append(head, makeToolSectionLabel("args"), argsBlock, makeToolSectionLabel("output"), outBlock, imgBox);
-    row.appendChild(card); log.appendChild(row); stickLog(log, stick);
+    const outLabel = makeToolSectionLabel("output"); outLabel.dataset.role = "output-label";
+    card.append(head, makeToolSectionLabel("args"), argsBlock, outLabel, outBlock, imgBox);
+    row.appendChild(card); log.appendChild(row); stickLog();
     return card;
   }
 
@@ -871,24 +936,59 @@
     }
     outBox.innerHTML = "";
     outBox.appendChild(renderValue(display));
-    if (Array.isArray(imgs) && imgs.length) renderCardImages(card, imgs);
+    if (Array.isArray(imgs) && imgs.length) {
+      renderCardImages(card, imgs);
+      foldImageMetadata(card, outBox);
+    }
+    // The "running…" placeholder this replaces is a fraction of the height of a
+    // real output, so without this the log falls behind by the difference.
+    stickLog();
+  }
+
+  /**
+   * Fold a tool card's output away behind a toggle when the result is an image.
+   *
+   * The picture is what the reader came for; the output beside it is metadata
+   * about it — the tool's own fields, or just a {type, mimeType, size} stub when
+   * the tool returned nothing but the image — and left open it pushes the image
+   * down the card.
+   */
+  function foldImageMetadata(card, outBox) {
+    const label = card.querySelector('[data-role="output-label"]');
+    if (!label) return;   // already folded: a card can receive its output twice
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tool-fold";
+    const sync = () => { btn.textContent = outBox.hidden ? "▸ metadata" : "▾ metadata"; };
+    btn.addEventListener("click", () => {
+      outBox.hidden = !outBox.hidden;
+      sync();
+      // Opening the fold is a request to read it, so the reader may well have
+      // just left the bottom — and closing it puts them back.
+      syncLogFollow();
+    });
+    outBox.hidden = true;
+    sync();
+    label.replaceWith(btn);
   }
 
   function renderCardImages(card, images) {
     const box = card.querySelector('[data-role="images"]');
     if (!box) return;
-    const log = logEl();
-    const stick = isLogAtBottom(log);
     box.innerHTML = "";
     for (const img of images) {
       if (!img?.data) continue;
       const el = document.createElement("img"); el.className = "tool-image";
       el.src = `data:${img.mimeType || "image/png"};base64,${img.data}`;
       el.alt = "Tool output";
+      // A data URL still decodes asynchronously, and the element has no
+      // intrinsic size until it does, so the row grows after this returns —
+      // with no DOM mutation for the observer to notice.
+      el.addEventListener("load", scheduleStickLog, { once: true });
       el.addEventListener("click", () => openLightbox(el.src));
       box.appendChild(el);
     }
-    if (box.children.length) stickLog(log, stick);
+    if (box.children.length) stickLog();
   }
 
   function openLightbox(src) {
@@ -918,9 +1018,15 @@
     const btn = $("runBtn"); if (!btn) return;
     btn.classList.toggle("btn-danger", on); btn.classList.toggle("btn-primary", !on);
     btn.textContent = on ? "■ Cancel" : "▶ Run";
-    // Lock / unlock the Blockly workspace during execution
+    // Stop the running workflow being edited without making it unreadable.
+    // Blockly's own read-only mode gates dragging blocks, editing fields,
+    // deleting, context menus and the keyboard shortcuts, and leaves panning,
+    // the scrollbars and the wheel alone — so the highlighted block can still
+    // be scrolled to. The class reaches only the toolbox and the flyout, which
+    // run on their own workspace and do not inherit the flag.
     const wsEl = $("workspace");
     if (wsEl) wsEl.classList.toggle("workspace-locked", on);
+    try { workspace.setIsReadOnly(on); } catch { workspace.options.readOnly = on; }
   }
   function closeSSE() { if (execState.es) { try { execState.es.close(); } catch {} execState.es = null; } }
 
@@ -966,11 +1072,15 @@
       box.classList.toggle("run-group--collapsed", on);
       head.setAttribute("aria-expanded", String(!on));
     };
-    head.addEventListener("click", () =>
-      setCollapsed(!box.classList.contains("run-group--collapsed")));
+    head.addEventListener("click", () => {
+      setCollapsed(!box.classList.contains("run-group--collapsed"));
+      // Folding changes the log's height by a whole run, which lands the view
+      // somewhere neither side chose. Re-decide from where it actually landed.
+      syncLogFollow();
+    });
     // The rail only ever folds: once folded it is hidden with the body, so the
     // header caret is what brings it back.
-    rail.addEventListener("click", () => setCollapsed(true));
+    rail.addEventListener("click", () => { setCollapsed(true); syncLogFollow(); });
     setCollapsed(false);
 
     appendChatEl("system", box);
@@ -981,7 +1091,10 @@
   function adoptIntoRun(el) {
     const row = el?.parentElement;          // logCard/appendToolCard return the card
     const group = execState.runGroup;
-    if (row && group && row.parentElement !== group.body) group.body.appendChild(row);
+    if (row && group && row.parentElement !== group.body) {
+      group.body.appendChild(row);
+      stickLog();   // the run box is narrower, so the row rewraps taller here
+    }
     return el;
   }
 
@@ -1012,6 +1125,9 @@
     btn.addEventListener("click", () => {
       pre.hidden = !pre.hidden;
       btn.textContent = pre.hidden ? "Show XML" : "Hide XML";
+      // Opening the fold is a request to read it, so the reader may well have
+      // just left the bottom — and closing it puts them back.
+      syncLogFollow();
     });
     card.append(btn, pre);
     return card;
@@ -1864,10 +1980,8 @@
        * Without this the view falls behind its own answer mid-stream.
        */
       _render() {
-        const log = logEl();
-        const stick = isLogAtBottom(log);
         renderMarkdown(this.textEl, this.raw);
-        stickLog(log, stick);
+        stickLog();
       },
     };
     return msg;
@@ -1982,7 +2096,6 @@
    */
   async function sendAgentMessage(text) {
     makeUserMessage(text);
-    const log = logEl();
     // Recorded now so the footer names the model that actually answered, even
     // if the picker is changed afterwards.
     const model = $("agentModelSelect")?.value || "";
@@ -2040,7 +2153,6 @@
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       for await (const { event, data } of readSseStream(res)) {
-        const stick = isLogAtBottom(log);
         if (event === "thinking") {
           openBubble();
           // Reasoning arriving is the model answering, so the wait is over
@@ -2111,7 +2223,7 @@
         } else if (event === "error") {
           throw new Error(data.error || "unknown error");
         }
-        stickLog(log, stick);
+        stickLog();
       }
       const empty = !msg || !msg.textEl.textContent;
       closeBubble();
@@ -2285,7 +2397,11 @@
     $("runBtn")?.addEventListener("click", async () => { if (execState.running) await cancelWorkflow(); else await runWorkflow(); });
     $("newSessionBtn")?.addEventListener("click", newSession);
     $("logJumpLatest")?.addEventListener("click", jumpToLatest);
-    $("log")?.addEventListener("scroll", () => updateJumpLatest());
+    $("log")?.addEventListener("scroll", syncLogFollow);
+    observeLogGrowth();
+    // KaTeX swaps in its own fonts once the math is in the DOM, reflowing the
+    // log with no mutation of its own to notice.
+    document.fonts?.ready?.then(scheduleStickLog);
     $("reportBtn")?.addEventListener("click", generateReport);
     setRunningUI(false);
 
