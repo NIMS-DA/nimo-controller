@@ -487,7 +487,7 @@
     const xml = document.createElement("xml");
     const core = document.createElement("category");
     core.setAttribute("name", "Control"); core.setAttribute("colour", COLOR_REPEAT);
-    for (const t of ["repeat_n_with_index", "loop_counter_ref", "if_counter"]) {
+    for (const t of ["loop_counter_ref", "repeat_n_with_index", "if_counter"]) {
       const b = document.createElement("block"); b.setAttribute("type", t); core.appendChild(b);
     }
     xml.appendChild(core);
@@ -621,7 +621,7 @@
 
     // Control category
     const core = document.createElement("category"); core.setAttribute("name", "Control"); core.setAttribute("colour", COLOR_REPEAT);
-    for (const t of ["repeat_n_with_index", "loop_counter_ref", "if_counter"]) {
+    for (const t of ["loop_counter_ref", "repeat_n_with_index", "if_counter"]) {
       const b = document.createElement("block"); b.setAttribute("type", t); core.appendChild(b);
     }
     xml.appendChild(core);
@@ -632,10 +632,8 @@
       const pRes = await (await fetch("/nimo/parameters")).json();
       if (pRes.ok) for (const p of pRes.parameters) { const b = document.createElement("block"); b.setAttribute("type", defineNimoVarBlock(p)); nimo.appendChild(b); }
     } catch (e) { logWarn("NIMO", `Parameters: ${e}`); }
-    for (const t of [NIMO_SEL_TYPE, NIMO_PHYSBO_TYPE, NIMO_PTR_TYPE, NIMO_UPD_TYPE]) {
-      const b = document.createElement("block"); b.setAttribute("type", t);
-      if (t === NIMO_PTR_TYPE) for (const k of ["ptr_lower", "ptr_upper"]) b.appendChild(makeShadowXml(k, { type: "number" }));
-      nimo.appendChild(b);
+    for (const t of [NIMO_UPD_TYPE, NIMO_SEL_TYPE, NIMO_PHYSBO_TYPE]) {
+      const b = document.createElement("block"); b.setAttribute("type", t); nimo.appendChild(b);
     }
     xml.appendChild(nimo);
 
@@ -656,6 +654,7 @@
     serverIds.forEach((sid, i) => serverColor.set(sid, SCRATCH_SERVER_COLORS[i % SCRATCH_SERVER_COLORS.length]));
 
     const cats = new Map();
+    const nimoToolBlocks = [];
     for (const tool of tools) {
       const sid = tool.server_id;
       if (sid === "nimo" && NIMO_HARDCODED.has(tool.name)) continue;
@@ -676,8 +675,15 @@
       }};
       const bx = document.createElement("block"); bx.setAttribute("type", type);
       for (const [k, ps] of Object.entries(schema?.properties || {})) { const s = makeShadowXml(k, ps); if (s) bx.appendChild(s); }
-      cat.appendChild(bx);
+      if (sid === "nimo") nimoToolBlocks.push([tool.name, bx]); else cat.appendChild(bx);
     }
+
+    // nimo tools: plot_history_best first, the rest alphabetically, PTR last.
+    nimoToolBlocks.sort(([a], [b]) => (b === "plot_history_best") - (a === "plot_history_best") || a.localeCompare(b));
+    for (const [, bx] of nimoToolBlocks) nimo.appendChild(bx);
+    const ptr = document.createElement("block"); ptr.setAttribute("type", NIMO_PTR_TYPE);
+    for (const k of ["ptr_lower", "ptr_upper"]) ptr.appendChild(makeShadowXml(k, { type: "number" }));
+    nimo.appendChild(ptr);
 
     workspace.updateToolbox(xml);
   }
