@@ -70,6 +70,9 @@ mcp_servers:
 
 enable_agent: true
 
+# provider: "openai" (OPENAI_API_KEY) | "anthropic" (ANTHROPIC_API_KEY)
+# | "ollama" (base_url required, no key). The model and its reasoning level
+# are picked in the UI, not here.
 agent:
   provider: ollama
   base_url: "http://127.0.0.1:11434/v1"

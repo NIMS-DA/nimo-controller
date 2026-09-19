@@ -10,7 +10,11 @@ port: 8888
 # Agent mode: show a prompt box under the execution log (experimental)
 # enable_agent: true
 
-# Agent settings — provider: "openai" | "ollama"
+# Agent settings — provider: "openai" | "anthropic" | "ollama"
+# openai needs OPENAI_API_KEY, anthropic needs ANTHROPIC_API_KEY; both take an
+# optional base_url. ollama needs base_url and no key.
 # agent:
-#   provider: ollama
-#   base_url: "http://127.0.0.1:11434/v1"
+#  provider: openai
+#  provider: anthropic
+#  provider: ollama
+#  base_url: "http://127.0.0.1:11434/v1"

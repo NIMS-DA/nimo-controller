@@ -38,8 +38,10 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
     ToolCallPart,
 )
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.ollama import OllamaModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -180,7 +182,10 @@ def build_model(name: str, provider: str, base_url: str | None,
 
     Settings are attached to the model itself because the planner agent's
     run() is not given model settings. temperature/seed pin down sampling for
-    reproducible evaluation (best-effort — see run_eval.py). ``timeout`` also
+    reproducible evaluation (best-effort — see run_eval.py); note that the
+    Responses API takes temperature but has no seed, and neither does the
+    Anthropic Messages API, so on both the seed is accepted and then ignored,
+    while Ollama still honors it. ``timeout`` also
     becomes the HTTP read timeout, so a server that goes silent mid-stream
     fails at the transport instead of relying on task cancellation.
     """
@@ -202,11 +207,20 @@ def build_model(name: str, provider: str, base_url: str | None,
         return OllamaModel(name, settings=settings,
                            provider=OllamaProvider(base_url=url,
                                                    http_client=http_client))
+    if provider == "anthropic":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            sys.exit("the ANTHROPIC_API_KEY environment variable is not set")
+        ap = (AnthropicProvider(base_url=base_url, http_client=http_client)
+              if base_url else AnthropicProvider(http_client=http_client))
+        return AnthropicModel(name, provider=ap, settings=settings)
     if not os.environ.get("OPENAI_API_KEY"):
         sys.exit("the OPENAI_API_KEY environment variable is not set")
     p = (OpenAIProvider(base_url=base_url, http_client=http_client) if base_url
          else OpenAIProvider(http_client=http_client))
-    return OpenAIChatModel(name, provider=p, settings=settings)
+    # Responses API, mirroring agent.py: the planner runs with tools, and the
+    # reasoning models reject an explicit effort next to function tools on
+    # /v1/chat/completions.
+    return OpenAIResponsesModel(name, provider=p, settings=settings)
 
 
 def make_progress(timeout: float | None = None) -> tuple[Any, dict]:
@@ -427,7 +441,7 @@ def cli_main(generate_fn: Any, doc: str) -> None:
     parser.add_argument("--catalog", default="evaluation/catalog.json",
                         help="catalog JSON from build_catalog.py")
     parser.add_argument("--model", required=True, help="model name")
-    parser.add_argument("--provider", choices=("openai", "ollama"),
+    parser.add_argument("--provider", choices=("openai", "anthropic", "ollama"),
                         help="default: agent.provider from config.yaml, "
                              "or openai")
     parser.add_argument("--base-url",

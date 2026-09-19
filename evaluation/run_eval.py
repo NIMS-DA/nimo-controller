@@ -26,11 +26,11 @@ from generate_clairify import generate as generate_clairify
 from generate_xml import generate as generate_pydantic
 
 # -- configuration: edit here, no command-line arguments ----------------------
-MODELS = ["gpt-oss:120b", "gpt-oss:20b", "qwen3.6:35b", "qwen3.6:27b", "deepseek-r1:32b", "deepseek-r1:14b", "gemma4:31b", "gemma4:e4b"]  # model names to evaluate
+MODELS = ["deepseek-r1:14b"]  # model names to evaluate
 # Generation methods to compare: name -> generate function (one per module).
 METHODS = {"pydantic": generate_pydantic, "clairify": generate_clairify}
-PROVIDER = None           # None = agent.provider from config.yaml, or openai
-BASE_URL = None           # None = agent.base_url from config.yaml
+PROVIDER = "ollama"           # None = agent.provider from config.yaml, or openai
+BASE_URL = "http://100.106.124.65:11434/v1"           # None = agent.base_url from config.yaml
 THINKING = None           # None = the model's own default
 TEMPERATURE = None        # fixed for reproducibility; None = model's default
 SEEDS: list[int] = [0]   # one generation per seed; formatting slips

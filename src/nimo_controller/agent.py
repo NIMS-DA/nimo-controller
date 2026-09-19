@@ -3,7 +3,10 @@
 ``config.yaml`` only says *where* to talk to, via ``agent.provider``:
 
 * ``openai`` — the API key is read from the ``OPENAI_API_KEY`` environment
-  variable; ``base_url`` is optional (for OpenAI-compatible endpoints).
+  variable; ``base_url`` is optional (for OpenAI-compatible endpoints, which
+  then have to serve the Responses API — see ``_build_model``).
+* ``anthropic`` — the API key is read from the ``ANTHROPIC_API_KEY``
+  environment variable; ``base_url`` is optional.
 * ``ollama`` — ``base_url`` is required; a self-hosted server needs no API key.
 
 Which model to use and how hard it should reason are picked in the UI, not
@@ -50,8 +53,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.ollama import OllamaModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.run import AgentRunResultEvent
@@ -427,27 +432,59 @@ class AgentRuntime:
             return (OpenAIProvider(base_url=self.base_url) if self.base_url
                     else OpenAIProvider())
 
+        if self.provider == "anthropic":
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                raise AgentConfigError(
+                    "the ANTHROPIC_API_KEY environment variable is not set "
+                    "(required for provider 'anthropic')"
+                )
+            return (AnthropicProvider(base_url=self.base_url) if self.base_url
+                    else AnthropicProvider())
+
         raise AgentConfigError(
-            f"unknown agent.provider: {self.provider!r} (expected 'openai' or 'ollama')"
+            f"unknown agent.provider: {self.provider!r} "
+            "(expected 'openai', 'anthropic' or 'ollama')"
         )
 
     def _build_model(self) -> Any:
-        """Wrap the current model name for the configured provider."""
+        """Wrap the current model name for the configured provider.
+
+        OpenAI goes through the Responses API, not Chat Completions: the agent
+        always carries tools, and the reasoning models reject an explicit
+        reasoning effort alongside function tools on /v1/chat/completions. The
+        Responses API takes both, so the reasoning level picked in the UI
+        stays available on every model rather than only on the ones that never
+        reason. The cost is that an OpenAI-compatible ``base_url`` has to serve
+        /v1/responses; the ones that only implement Chat Completions no longer
+        work here.
+
+        Anthropic needs no such choice: one Messages API serves every model,
+        and pydantic-ai turns the reasoning level picked in the UI into
+        whichever form the chosen model takes (adaptive thinking and an effort
+        level on the newer ones, a thinking budget on the older).
+        """
         if not self.model:
             raise AgentConfigError("no model selected")
         if self.provider == "ollama":
             return OllamaModel(self.model, provider=self._provider)
-        return OpenAIChatModel(self.model, provider=self._provider)
+        if self.provider == "anthropic":
+            return AnthropicModel(self.model, provider=self._provider)
+        return OpenAIResponsesModel(self.model, provider=self._provider)
 
     # -- runtime settings -------------------------------------------------
 
     async def list_models(self) -> List[str]:
         """Return the model ids the configured endpoint offers.
 
-        Uses the provider's own OpenAI client, so the base URL and credentials
-        already in play are reused rather than reconstructed.
+        Uses the provider's own client, so the base URL and credentials already
+        in play are reused rather than reconstructed. Both SDKs answer with a
+        page carrying ``.data``; only Anthropic's takes a page size, and it is
+        asked for a large one so the list is not cut off at its default of 20.
         """
-        result = await self._provider.client.models.list()
+        client = self._provider.client
+        result = await (client.models.list(limit=1000)
+                        if self.provider == "anthropic"
+                        else client.models.list())
         return sorted(m.id for m in result.data)
 
     def apply_settings(self, model: str, thinking: Any) -> None:
