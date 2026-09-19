@@ -44,8 +44,6 @@ from .paths import (
 ensure_user_dirs()
 _CONFIG_PATH: Path = resolve_config_path()
 
-# Module level: the report builder and the lifespan both log, and a name bound
-# only inside lifespan() would be a NameError everywhere else.
 log = logging.getLogger("nimo")
 
 
@@ -118,12 +116,7 @@ class Job:
     # In-flight MCP task handle + its client, so /cancel can notify the server.
     current_task: Any = None
     current_client: Any = None
-    # Set once the run has reached a terminal status *and* its session entry has
-    # been written. An Event rather than something waiters could poll for: status
-    # flips several statements before the entry lands, so a waiter woken by the
-    # status would read the previous run's record. It sits next to finished_at
-    # but answers a different question: that one is a timestamp, this is the
-    # signal that the record is safe to read.
+    # Signals that execution ended and its session entry is safe to read.
     completed: asyncio.Event = field(default_factory=asyncio.Event)
 
     def push(self, event: str, data: Any) -> None:
@@ -176,18 +169,8 @@ def _attr(obj: Any, key: str, default: Any = None) -> Any:
 
 
 # --- Tool results ----------------------------------------------------------
-#
-# What a tool returns is whatever its author's type annotation implies: a
-# number, a dict, a pydantic model, a dataclass. Everything downstream of here
-# is JSON — the SSE frames, the session log, the report, the agent's context —
-# so the conversion happens once, at this edge.
-#
-# The shape that arrives also depends on which library built the server. MCP
-# output schemas must be objects, so a tool returning a bare number has its
-# value wrapped as {"result": ...}. Servers built with the fastmcp library mark
-# that wrapping and our client unwraps it automatically; servers built with the
-# official SDK's FastMCP wrap without the marker, and the value arrives as a
-# generated "<tool>Output" model instead of the number. Both are handled below.
+# Normalize MCP results once for SSE, logs, reports, and agent context. Scalar
+# results may arrive inside a {"result": ...} wrapper.
 
 _JSONABLE_DEPTH = 12
 """Recursion cap for _jsonable. Deep enough for any real tool result, and it
@@ -699,10 +682,6 @@ def _job_handle_sink(job: "Job") -> Callable[[Any, Any], None]:
 
 
 # ---------------------------------------------------------------------------
-# Chat / agent log extraction
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # FastAPI app + lifespan
 # ---------------------------------------------------------------------------
 
@@ -722,9 +701,7 @@ async def lifespan(app: FastAPI):
     async def _nimo_log_handler(message: Any) -> None:
         """Collect NIMO's spoken-word notes for the call in flight.
 
-        A buffer rather than a per-call value because the note arrives while
-        the tool is still running; _exec_node clears it before each call, the
-        same way the wrapper used to reset its own notes list.
+        The buffer is cleared before each call and read when the call finishes.
         """
         text = (getattr(message, "data", None) or {})
         text = text.get("msg") if isinstance(text, dict) else str(text)
@@ -776,7 +753,7 @@ async def lifespan(app: FastAPI):
     app.state.agent = None
     app.state.agent_error = None
     if ENABLE_AGENT:
-        # These moved into the UI; say so rather than ignoring them silently.
+        # Model and reasoning settings are selected in the UI.
         stale = [k for k in ("model", "thinking") if k in AGENT_CONFIG]
         if stale:
             log.warning("config.yaml: agent.%s is no longer used — the model and "
@@ -1091,8 +1068,7 @@ class AddServerRequest(BaseModel):
 
 @app.get("/settings/servers")
 async def list_servers():
-    # nimo runs in-process (direct function calls), not as an MCP server, so it
-    # is not listed here — only the user-added MCP servers are shown.
+    # The bundled NIMO subprocess is managed by the application lifespan.
     out = []
     for name, url in app.state.dynamic_servers.items():
         out.append({"name": name, "url": url, "builtin": False, "reconnectable": True})
@@ -1162,10 +1138,10 @@ async def reconnect_server(name: str):
     untouched.
     """
     async with app.state.server_lock:
-        # Built-in NIMO runs in-process (direct calls) — nothing to reconnect.
+        # The bundled NIMO subprocess is not managed through dynamic settings.
         if name == NIMO_MCP_NAME:
             return {"ok": False,
-                    "error": "NIMO runs in-process and has no separate server to reconnect to"}
+                    "error": "Built-in NIMO is managed by the application and cannot be reconnected here"}
 
         # Dynamic servers (swaps the entry in app.state.mcp_clients).
         url = app.state.dynamic_servers.get(name)
@@ -1629,12 +1605,6 @@ async def workflow_log(workflow_id: str):
 # Workflow log — compact, well-formed XML (see data/nimo-workflow-0.1.0.xsd)
 # ---------------------------------------------------------------------------
 
-# 0.1.0: server-name tag dropped in favor of <nimo tool=..> for built-ins and
-# <call server=.. tool=..> for MCP tools; <server> entries list their tools;
-# <controller> and <server url=..> dropped, since how a run was wired up is a
-# property of the run, not of the workflow it describes.
-# (0.0.3 named an unshipped schema draft, and 0.0.4 this same content model
-# before it had a schema of its own — both skipped.)
 _WORKFLOW_XML_VERSION = "0.1.0"
 
 
@@ -1662,9 +1632,8 @@ def _tool_params_attr(spec: dict) -> str:
 def _servers_xml(app: FastAPI, indent: str) -> str:
     """Build the <servers> block from the connected MCP clients.
 
-    NIMO is not listed: it runs in-process as direct Python calls, and its
-    built-in tools are implied by the nimo-workflow version. Each server
-    carries the tools it offered, from the snapshot _collect_tools() keeps.
+    NIMO is omitted because its built-in tools are defined by the workflow
+    schema. Each external server lists the tools captured by _collect_tools().
     """
     lines = [f"{indent}<servers>"]
     clients = getattr(app.state, "mcp_clients", {}) or {}
@@ -1962,17 +1931,9 @@ def _write_session_log(app: FastAPI) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Activity digest — what the chat agent is told actually happened
+# Activity digest for chat context
 # ---------------------------------------------------------------------------
-#
-# The session log on disk is the complete archive; this is the briefing. They
-# have different jobs, so this deliberately does not reuse _step_markdown:
-# that renders one step as ~14 lines of timestamps and indented JSON, which is
-# fine for a file and far too much for something injected into every turn.
-#
-# Scope is the current session only. Nothing is read back from the folders of
-# earlier sessions — pressing "New session" starts the agent's picture over
-# too, because _start_session installs a Session whose entries are empty.
+# The digest summarizes only the current session; session_log.md is the archive.
 
 ACTIVITY_ENTRIES = 2
 """How many of the most recent session entries are shown in full."""
@@ -2071,15 +2032,9 @@ def _activity_digest() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Waiting for a planned workflow, so the agent can report what it actually did
+# Planned-workflow completion
 # ---------------------------------------------------------------------------
-#
-# In Auto mode plan_workflow blocks here until the run it just laid out is over.
-# It waits rather than starting the run itself because the page, not this
-# module, turns a workspace into an executable AST and POSTs /workflow/start.
-# That keeps one builder for the AST and makes the workspace the single source
-# of truth: what executes is always what the user can see, and can edit, on
-# screen.
+# The frontend exports the visible workspace as an AST and starts the run.
 
 WORKFLOW_START_TIMEOUT_S = 30
 """How long the page gets to act on a workflow event and POST /workflow/start.
@@ -2166,18 +2121,12 @@ async def _await_workflow(on_start: Optional[Callable[[str], None]] = None) -> d
 # Session report
 # ---------------------------------------------------------------------------
 #
-# Written on demand only, unlike session_log.md which is rewritten after every
-# entry. Both files are regenerated from session.entries each time, so editing
-# report.md by hand is fine — it just does not survive the next generation.
+# Reports are generated on demand from session entries.
 
 REPORT_MD = "report.md"
 REPORT_HTML = "report.html"
 
-# Figures the report knows how to caption: file-name stem -> label key. Anything
-# else in the folder is left alone. The stems match the file names nimo_mcp's
-# plot_history_best and plot_phase_diagram write, and have to be edited in step
-# with them. They are spelled out rather than imported because nimo_mcp lives
-# in the NIMO subprocess and pulls in the nimo library with it.
+# Map known NIMO plot stems to report caption keys.
 REPORT_FIGURES = (("best_objective", "fig_history"), ("phase_diagram", "fig_phase"))
 
 
@@ -2200,8 +2149,7 @@ def _report_direction() -> str:
                  else list(reversed(entry.get("history") or [])))
         for step in steps:
             if step.get("server_id") == "nimo" and step.get("tool") in report.PROPOSAL_TOOLS:
-                # New logs: selection with a minimization argument. Old logs
-                # (before the tool merge): a dedicated minimization tool.
+                # Accept selection arguments and dedicated method names.
                 args = step.get("args") or {}
                 minimize = (args.get("minimization") in (True, "true")
                             or step.get("tool") == "minimization")

@@ -28,32 +28,18 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-# --- stdio transport: take fd 1 away from everything else --------------------
-# Under stdio the JSON-RPC frames own stdout, but nimo (and the compiled code
-# under it) prints freely, and one stray line corrupts the protocol.
-# redirect_stdout() cannot cover that: it only swaps sys.stdout, so it misses
-# import-time output and anything writing to the descriptor directly. So
-# before nimo is imported, move the real stdout aside and point fd 1 at
-# stderr. Every print, from Python or C, then lands on stderr, and the
-# protocol stream is reachable only through the saved descriptor — which only
-# _run_stdio() hands to the transport.
+# Preserve stdout for MCP frames and redirect library output to stderr.
 _PROTO_FD: Optional[int] = None
 if __name__ == "__main__" and "streamable-http" not in sys.argv:
     _PROTO_FD = os.dup(1)
     os.dup2(2, 1)
     sys.stdout = os.fdopen(1, "w", buffering=1, errors="replace")
 
-# A selection runs on a worker thread (asyncio.to_thread, so the transport
-# stays responsive through a fit), but matplotlib's default backend here is a
-# GUI one — TkAgg on Windows — which must live on the main thread. The first
-# plot only warns; the second dies with "main thread is not in main loop" and
-# can take the process down with "Tcl_AsyncDelete: async handler deleted by the
-# wrong thread". We only ever write figures to disk, so pin the non-interactive
-# backend. Set before importing nimo, which imports pyplot at module scope.
+# Plotting runs on worker threads and writes files, so select a non-interactive
+# backend before importing nimo.
 os.environ.setdefault("MPLBACKEND", "Agg")
 try:
     import matplotlib
-    # force=True also covers matplotlib having been imported before us.
     matplotlib.use("Agg", force=True)
 except Exception:  # pragma: no cover - plotting simply stays as configured
     pass
@@ -93,8 +79,7 @@ class Method(str, Enum):
     PTR = "PTR"
 
 
-# The directional subset — keep in sync with DEDICATED_METHODS in frontend.js
-# and OPTIMIZATION_METHODS in planner.py.
+# Keep in sync with frontend.js and planner.py.
 OPTIMIZATION_METHODS = {"PHYSBO"}
 
 
@@ -108,18 +93,12 @@ class PlotMode(str, Enum):
     MINIMIZATION = "minimization"
 
 
-# What each algorithm needs from candidates.csv before it can run. RE, ES and
-# DOE are absent because they need no measurements (random / exhaustive /
-# design of experiments). When a requirement is unmet the call falls back to RE
-# rather than failing — nimo itself says "use RE for selection" in this case.
-# Minimums mirror where each nimo ai_tool actually crashes below: BLOX needs 3
-# because its RandomForest grid search uses 3-fold CV (ai_tool_blox.py, cv=3).
+# Minimum observations required by methods that fit a model. Calls fall back to
+# RE when their requirement is not met.
 FALLBACK_METHOD = "RE"
-# PTR needs 2: it fits a physbo GP per objective and resolves "min"/"max"
-# range placeholders from the observed values.
+# PTR needs two observations to resolve objective ranges and fit its models.
 _MIN_MEASURED = {"PDC": 1, "BLOX": 3, "PHYSBO": 1, "PTR": 2}
-# PDC classifies phases, so a single observed value gives it nothing to
-# separate; nimo reaches a sys.exit() in that state (ai_tool_pdc.py:126-128).
+# PDC requires at least two distinct observed phases.
 _NEEDS_TWO_PHASES = {"PDC"}
 
 
@@ -533,7 +512,7 @@ class NimoWrapper:
         return Image(path=os.path.join(self.run_dir, filename_diagram))
 
 
-# Module-level singleton used for direct in-process calls.
+# Stateful backend shared by MCP tool handlers in this server process.
 wrapper = NimoWrapper()
 
 # FastMCP object — the server behind `python -m nimo_controller.nimo_mcp`.

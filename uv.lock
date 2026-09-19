@@ -1606,9 +1606,10 @@ wheels = [
 
 [[package]]
 name = "nimo"
-version = "2.1.2"
-source = { git = "https://github.com/n-yoshikawa/nimo?branch=feature%2Fminimization-plot#cf60fd85866f315a41138b88cc1397b7ff215339" }
+version = "2.1.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "anthropic" },
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1622,10 +1623,14 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/84/1b0fc24577d4253e9c888b117f1df88b608c27ec91d3089020fbaf0240a1/nimo-2.1.5.tar.gz", hash = "sha256:0271337f08366aa7d025347915eac73cc4a99a48c2ac462aa3b815ba0a84eebf", size = 41844, upload-time = "2026-09-13T01:13:29.027Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/a5/771922d7c4598f719875d45fc30f9b9501a8df6fb775bd53d6ed3e60bcce/nimo-2.1.5-py3-none-any.whl", hash = "sha256:30715a6062ea7d399f2426a8bbb84a9b3d6de3169198559089de4d18e414b5cf", size = 68519, upload-time = "2026-09-13T01:13:27.859Z" },
+]
 
 [[package]]
 name = "nimo-controller"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1648,8 +1653,8 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.120.2" },
     { name = "fastapi", specifier = ">=0.135.2" },
-    { name = "fastmcp", extras = ["tasks"], specifier = ">=3.1.1" },
-    { name = "nimo", git = "https://github.com/n-yoshikawa/nimo?branch=feature%2Fminimization-plot" },
+    { name = "fastmcp", extras = ["tasks"], specifier = ">=3.1.1,<4" },
+    { name = "nimo", specifier = ">=2.1.5" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai-slim", extras = ["openai", "anthropic"], specifier = ">=2.22" },

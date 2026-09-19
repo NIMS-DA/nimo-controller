@@ -15,7 +15,7 @@ import sys
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
-# The name NIMO's tools appear under, in /tools and in workflow ASTs.
+# Server identifier used in tool catalogs and workflow ASTs.
 NIMO_MCP_NAME = "nimo"
 
 
@@ -35,8 +35,6 @@ def nimo_client(log_handler=None) -> Client:
         command=sys.executable,
         args=["-m", "nimo_controller.nimo_mcp", "--transport", "stdio"],
         cwd=os.getcwd(),
-        # Off by default here: the transport otherwise keeps the subprocess
-        # running for reuse after the client closes, so every app run would
-        # leave a NIMO behind holding the session's files open.
+        # Stop the subprocess when the application closes.
         keep_alive=False,
     ), log_handler=log_handler)

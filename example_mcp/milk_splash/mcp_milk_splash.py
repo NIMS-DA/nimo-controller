@@ -108,7 +108,7 @@ def git_hash_short() -> str:
 
 sdl = MilkSplashSDL()
 _hash = git_hash_short()
-mcp = FastMCP("milk", version=f"0.0.1+{_hash}" if _hash else "0.0.1")
+mcp = FastMCP("milk", version=f"0.0.2+{_hash}" if _hash else "0.0.2")
 
 mcp.tool(sdl.set_height)
 mcp.tool(sdl.set_volume)

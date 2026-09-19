@@ -33,19 +33,18 @@ from pydantic_ai.usage import RunUsage
 
 BUILTIN_SERVER = "nimo"
 
-# nimo tools that get no generic block, because the toolbox gives them a
-# dedicated one or hides them entirely. Mirrors NIMO_HARDCODED in frontend.js.
+# NIMO tools represented by dedicated blocks or hidden from user workflows.
+# Keep in sync with NIMO_HARDCODED in frontend.js.
 NIMO_HARDCODED = frozenset({
     "selection", "update",
     "get_parameter_names", "get_proposal", "reinitialize",
-    # Session plumbing the controller drives; a workflow never calls it.
+    # Session tools are controlled by the backend.
     "start_session", "start_workflow", "get_session_info",
     "get_candidate_stats",
 })
 
-# nimo tool -> the Blockly block that calls it. The one selection tool maps to
-# three UI blocks; nimo_selection is the catalog's representative, and
-# to_blockly_xml picks the PHYSBO / PTR variant from the method argument.
+# Map NIMO tools to their dedicated Blockly blocks. Selection uses a different
+# block for PHYSBO and PTR based on its method argument.
 NIMO_METHOD_BLOCKS = {
     "selection": "nimo_selection",
 }
@@ -55,16 +54,11 @@ _METHOD_BLOCK_TYPES = frozenset({
     "nimo_selection", NIMO_PHYSBO_BLOCK, NIMO_PTR_BLOCK,
 })
 
-# Directional methods — only with these does the minimization argument mean
-# anything, and the PHYSBO block spells it as its MODE dropdown. Keep in sync
-# with DEDICATED_METHODS in frontend.js and OPTIMIZATION_METHODS in nimo_mcp.py.
+# Methods that use the minimization argument. Keep in sync with frontend.js and
+# nimo_mcp.py.
 OPTIMIZATION_METHODS = frozenset({"PHYSBO"})
 
-# The dropdowns on the hand-written method blocks: the method on the plain
-# selection block, the direction on the PHYSBO block. Named by hand in
-# frontend.js, so neither follows the "field name is the schema property" rule
-# generated blocks obey — MODE in particular stands in for the boolean
-# `minimization` property.
+# Field names used by the hand-written selection blocks in frontend.js.
 METHOD_FIELD = "METHOD"
 MODE_FIELD = "MODE"
 MODE_MAXIMIZATION, MODE_MINIMIZATION = "maximization", "minimization"

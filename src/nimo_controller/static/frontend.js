@@ -383,11 +383,7 @@
     this.setTooltip("Propose the candidate whose predicted objective most likely falls in [ptr_lower, ptr_upper].");
   }};
 
-  // PHYSBO: selection with a fixed method and a direction dropdown. Static
-  // rather than built by defineNimoMethodBlock() — the method is fixed, so
-  // there is no server enum for it to track. MODE carries what used to be the
-  // identity of the maximization / minimization blocks; maximization comes
-  // first because that is nimo's own default (minimization=False).
+  // PHYSBO uses a fixed method and maps MODE to the minimization argument.
   Blockly.Blocks[NIMO_PHYSBO_TYPE] = { init() {
     this.appendDummyInput().appendField("PHYSBO").appendField("mode")
       .appendField(new Blockly.FieldDropdown(
@@ -904,10 +900,7 @@
   // =========================================================================
   // Workflow execution + SSE
   // =========================================================================
-  // startCard is the "Started at …" card, kept so the workflow XML can be
-  // folded into it when the server sends it a moment later.
-  // runGroup is the collapsible box holding one run's whole output — a ten-cycle
-  // loop otherwise leaves forty-odd cards lying loose in the log.
+  // Track the active run, its event stream, and its collapsible log group.
   const execState = {
     running: false, workflowId: null, es: null, lastCard: null, startCard: null,
     runGroup: null, runSteps: 0, runStartedAt: 0,
@@ -945,10 +938,7 @@
     label.className = "run-group__label";
     head.append(caret, label);
 
-    // A rail down the left edge, the full height of the body, so the run can be
-    // folded from wherever the reader happens to be inside it. The header
-    // toggle can only be reached by scrolling back to the top, which is most
-    // work exactly when the run is long enough to be worth folding.
+    // The side rail collapses long runs without returning to the header.
     const main = document.createElement("div");
     main.className = "run-group__main";
     const rail = document.createElement("button");
@@ -1670,8 +1660,7 @@
   // =========================================================================
   // Markdown + math rendering (agent replies)
   // =========================================================================
-  // Loaded from a CDN, so every entry point is guarded: without the network the
-  // reply still reads fine as plain text, which is what it was before.
+  // Fall back to plain text when the CDN libraries are unavailable.
 
   // How often a streaming answer is re-rendered. Long enough that a fast model
   // does not trigger a full re-parse per token, short enough to read as live.
@@ -1800,13 +1789,7 @@
     box.append(head, thinkingEl, waitEl, textEl);
     appendChatEl("system", box);
 
-    // The answer is rendered as it arrives, on a timer rather than per delta:
-    // every pass re-parses the whole message and re-scans it for formulas, so
-    // running that per token would pile up on a long reply.
-    //
-    // A half-written formula is not a problem — the math spans are only lifted
-    // out once their closing delimiter has arrived, so an unfinished one shows
-    // as a literal "$" and turns into math the moment it is closed.
+    // Throttle rendering because each pass parses the full accumulated reply.
     const msg = {
       box, toggle, thinkingEl, waitEl, textEl, setOpen,
       raw: "",
@@ -1966,11 +1949,7 @@
     const card = logInfo("Agent", data.auto_run
       ? `Workflow placed in the workspace${summary}. Running it now.`
       : `Workflow placed in the workspace${summary}. Review or edit the blocks, then press Run.`);
-    // The NIMO XML of what was just placed, so the design can be read as a
-    // workflow rather than as blocks before anything is run. Not awaited: in
-    // Auto mode the run starts the moment this returns, and the server only
-    // gives the page WORKFLOW_START_TIMEOUT_S to get there — a round trip for a
-    // fold nobody has opened yet is not worth spending it on.
+    // Fetch the optional XML preview without delaying automatic execution.
     fetchWorkflowXml().then(xml => attachXmlFold(card, xml));
   }
 

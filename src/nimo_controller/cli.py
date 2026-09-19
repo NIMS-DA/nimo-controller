@@ -35,8 +35,7 @@ def main() -> None:
     cfg = _read_config()
     port = args.port if args.port is not None else int(cfg.get("port", 8888))
 
-    # NIMO runs in-process inside the web server (direct function calls),
-    # so there is no separate NIMO MCP server to launch here.
+    # The application lifespan starts the bundled NIMO MCP subprocess.
     uvicorn.run(
         "nimo_controller.server:app",
         host=args.host,

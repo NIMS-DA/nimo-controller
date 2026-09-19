@@ -19,7 +19,7 @@ def git_hash_short() -> str:
 mcp = FastMCP(name="sdl", host="127.0.0.1", port=8001)
 
 _hash = git_hash_short()
-mcp._mcp_server.version = f"0.0.1+{_hash}" if _hash else "0.0.1"
+mcp._mcp_server.version = f"0.0.2+{_hash}" if _hash else "0.0.2"
 
 
 @mcp.tool()

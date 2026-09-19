@@ -109,7 +109,7 @@ def git_hash_short() -> str:
 
 sdl = CoffeeRingSDL()
 _hash = git_hash_short()
-mcp = FastMCP("coffee", version=f"0.0.1+{_hash}" if _hash else "0.0.1")
+mcp = FastMCP("coffee", version=f"0.0.2+{_hash}" if _hash else "0.0.2")
 
 mcp.tool(sdl.load_plate)
 mcp.tool(sdl.prepare_sample)

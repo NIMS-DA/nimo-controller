@@ -36,7 +36,7 @@ def git_hash_short() -> str:
 
 sdl = SampleSDL()
 
-mcp = FastMCP(version=f"0.0.1+{git_hash_short()}")
+mcp = FastMCP(version=f"0.0.2+{git_hash_short()}")
 mcp.tool(sdl.get_phase)
 
 if __name__ == "__main__":
