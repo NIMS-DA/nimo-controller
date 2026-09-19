@@ -1,0 +1,1 @@
+Explore the Ackley function in 20 cycles: the first 5 cycles use RE selection, the remaining 15 use BLOX selection. Every cycle evaluates ackley_function at the proposed (x1, x2) and updates the objective. Finally, plot the convex hull.

@@ -1,0 +1,1 @@
+Sample the Ackley function in 20 cycles of RE selection. Every cycle evaluates ackley_function at the proposed (x1, x2) and updates the objective. Finally, plot the distribution.

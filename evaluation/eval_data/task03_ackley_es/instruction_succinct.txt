@@ -1,0 +1,1 @@
+Explore the Ackley function using ES algorithm for 20 times. Call ackley_function at the proposed (x1, x2) at each iteration and update the objective. Finally, plot the distribution.

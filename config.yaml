@@ -1,15 +1,20 @@
-# LLM model
-model: "gpt-4o-mini"
-
-# Optional: OpenAI-compatible endpoint (e.g. Ollama).
-# Uncomment and set `model` above to a local model name (e.g. "gemma3").
-# openai_base_url: "http://127.0.0.1:11434/v1"
-# openai_api_key: "ollama"
-
-
-# MCP servers
-mcp_servers:
-  sdl: "http://127.0.0.1:8001/mcp"
- 
 # Server port
 port: 8888
+
+# Data directory for candidates.csv and results/ (default: ~/.nimo-controller)
+# data_dir: "~/my-nimo-data"
+
+# mcp_servers:
+#   sdl: "http://127.0.0.1:8001/mcp"
+
+# Agent mode: show a prompt box under the execution log (experimental)
+# enable_agent: true
+
+# Agent settings — provider: "openai" | "anthropic" | "ollama"
+# openai needs OPENAI_API_KEY, anthropic needs ANTHROPIC_API_KEY; both take an
+# optional base_url. ollama needs base_url and no key.
+# agent:
+#  provider: openai
+#  provider: anthropic
+#  provider: ollama
+#  base_url: "http://127.0.0.1:11434/v1"

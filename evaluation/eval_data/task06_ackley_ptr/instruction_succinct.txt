@@ -1,0 +1,1 @@
+Search the Ackley function in 20 cycles: the first 5 cycles use RE selection, the remaining 15 use PTR selection targeting the objective range from 3 to 4. Every cycle evaluates ackley_function at the proposed (x1, x2) and updates the objective. Finally, plot the distribution.

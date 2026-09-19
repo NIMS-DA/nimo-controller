@@ -1,7 +1,7 @@
 [project]
 name = "nimo-controller"
-version = "0.0.1"
-description = "NIMO Controller: MCP-based interface for self-driving laboratories"
+version = "0.0.2"
+description = "NIMO Controller: MCP-based orchestrator for self-driving laboratories"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -9,19 +9,24 @@ authors = [
     { name = "Naruki Yoshikawa" },
 ]
 dependencies = [
+    "anthropic>=0.120.2",
     "fastapi>=0.135.2",
-    "fastmcp[tasks]>=3.1.1",
-    "nimo>=2.1.4",
-    "openai>=1.0",
-    "openai-agents>=0.13.2",
+    "fastmcp[tasks]>=3.1.1,<4",
+    "nimo>=2.1.5",
     "platformdirs>=4.0",
     "pydantic>=2.0",
+    "pydantic-ai-slim[openai,anthropic]>=2.22",
     "pyyaml>=6.0",
     "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]
 nimo-controller = "nimo_controller.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.10.12,<0.11.0"]
