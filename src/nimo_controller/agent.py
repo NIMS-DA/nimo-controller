@@ -3,11 +3,12 @@
 ``config.yaml`` only says *where* to talk to, via ``agent.provider``:
 
 * ``openai`` — the API key is read from the ``OPENAI_API_KEY`` environment
-  variable; ``base_url`` is optional (for OpenAI-compatible endpoints, which
-  then have to serve the Responses API — see ``_build_model``).
+  variable.
 * ``anthropic`` — the API key is read from the ``ANTHROPIC_API_KEY``
-  environment variable; ``base_url`` is optional.
+  environment variable.
 * ``ollama`` — ``base_url`` is required; a self-hosted server needs no API key.
+* ``chatgpt`` — browser OAuth with the user's ChatGPT plan; credentials are
+  supplied by the backend's protected account store.
 
 Which model to use and how hard it should reason are picked in the UI, not
 configured, so this starts with no model at all: the provider is built up front
@@ -241,10 +242,15 @@ class AgentRuntime:
         activity: Optional[Callable[[], str]] = None,
         make_report: Optional[Callable[[], Awaitable[dict]]] = None,
         await_workflow: Optional[Callable[..., Awaitable[dict]]] = None,
+        chatgpt_auth: Any = None,
+        chatgpt_profile: str = "",
     ):
         self.provider: str = str(raw.get("provider") or "openai").strip().lower()
+        self.chatgpt_auth = chatgpt_auth
+        self.chatgpt_profile = chatgpt_profile
+        self.model_names: Dict[str, str] = {}
         self.base_url: Optional[str] = (str(raw.get("base_url")).strip()
-                                        if raw.get("base_url") else None)
+                                        if self.provider == "ollama" and raw.get("base_url") else None)
         # Both are chosen in the UI, never configured.
         self.model: str = ""
         self.thinking: Any = None
@@ -415,6 +421,16 @@ class AgentRuntime:
 
     def _build_provider(self) -> Any:
         """Create the backend connection. Built once and reused across rebuilds."""
+        if self.provider == "chatgpt":
+            from openai import AsyncOpenAI
+            from .chatgpt_auth import RESOURCE
+
+            async def credential():
+                return await self.chatgpt_auth.access_token(self.chatgpt_profile)
+
+            return OpenAIProvider(openai_client=AsyncOpenAI(
+                api_key=credential, base_url=RESOURCE, max_retries=0,
+            ))
         if self.provider == "ollama":
             if not self.base_url:
                 raise AgentConfigError(
@@ -443,7 +459,7 @@ class AgentRuntime:
 
         raise AgentConfigError(
             f"unknown agent.provider: {self.provider!r} "
-            "(expected 'openai', 'anthropic' or 'ollama')"
+            "(expected 'openai', 'chatgpt', 'anthropic' or 'ollama')"
         )
 
     def _build_model(self) -> Any:
@@ -465,6 +481,9 @@ class AgentRuntime:
         """
         if not self.model:
             raise AgentConfigError("no model selected")
+        if self.provider == "chatgpt":
+            from .chatgpt_auth import ChatGPTResponsesModel
+            return ChatGPTResponsesModel(self.model, provider=self._provider)
         if self.provider == "ollama":
             return OllamaModel(self.model, provider=self._provider)
         if self.provider == "anthropic":
@@ -481,6 +500,10 @@ class AgentRuntime:
         page carrying ``.data``; only Anthropic's takes a page size, and it is
         asked for a large one so the list is not cut off at its default of 20.
         """
+        if self.provider == "chatgpt":
+            catalog = await self.chatgpt_auth.models(self.chatgpt_profile)
+            self.model_names = {row["id"]: row["name"] for row in catalog}
+            return list(self.model_names)
         client = self._provider.client
         result = await (client.models.list(limit=1000)
                         if self.provider == "anthropic"

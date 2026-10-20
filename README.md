@@ -14,7 +14,7 @@ uv sync
 
 ### Bayesian optimization
 
-The `example_mcp/optimization` directory contains an example MCP server that implements the two-dimensional [test functions for optimization](https://en.wikipedia.org/wiki/Test_functions_for_optimization).
+The `example_mcp/optimization` directory contains an example MCP server that implements two-dimensional [test functions for optimization](https://en.wikipedia.org/wiki/Test_functions_for_optimization).
 
 Start the MCP server:
 
@@ -31,11 +31,11 @@ uv run nimo-controller
 ```
 
 Then open `http://127.0.0.1:8888/` in your browser.
-You will see an empty screen. The agent text box will appear when `enable_agent` is set `true` in the configuration.
+The workflow workspace is initially empty. The agent text box appears when `enable_agent` is set to `true` in `config.yaml`.
 
 ![screenshot1](./screenshots/screenshot1.png)
 
-First, you need to add the MCP server. Click `Manage MCP servers` button and type a name for MCP server and `http://127.0.0.1:8001/mcp` as its URL. 
+Click **Manage MCP servers**, enter a name for the server, and use `http://127.0.0.1:8001/mcp` as its URL.
 
 ![screenshot2](./screenshots/screenshot2.png)
 
@@ -60,7 +60,7 @@ Configuration is loaded from the following sources, in order of precedence:
 2. `<user-config-dir>/nimo-controller/config.yaml` (for example, `~/.config/nimo-controller/config.yaml`)
 3. Built-in defaults (used when no config file exists)
 
-Example `config.yaml`:
+Set startup options in `config.yaml` before launching the app:
 
 ```yaml
 port: 8888
@@ -70,14 +70,15 @@ mcp_servers:
 
 enable_agent: true
 
-# provider: "openai" (OPENAI_API_KEY) | "anthropic" (ANTHROPIC_API_KEY)
-# | "ollama" (base_url required, no key). The model and its reasoning level
-# are picked in the UI, not here.
-agent:
-  provider: ollama
-  base_url: "http://127.0.0.1:11434/v1"
-
 # Optional: where candidates.csv and results/ are stored.
 # Defaults to ~/.nimo-controller if omitted.
 # data_dir: "~/my-nimo-data"
 ```
+
+## Using Agents
+
+To enable the agent, set `enable_agent: true` in `config.yaml` before starting the app.
+
+Choose **OpenAI**, **Anthropic**, or **Ollama** in the settings or `config.yaml`.
+You need to sign in with ChatGPT, set the appropriate API-key environment variable before launch, or enter your Ollama server's base URL to use LLMs.
+See the comments in `config.yaml` for details.

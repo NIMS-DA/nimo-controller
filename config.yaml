@@ -8,13 +8,19 @@ port: 8888
 #   sdl: "http://127.0.0.1:8001/mcp"
 
 # Agent mode: show a prompt box under the execution log (experimental)
-# enable_agent: true
+enable_agent: true
 
-# Agent settings — provider: "openai" | "anthropic" | "ollama"
-# openai needs OPENAI_API_KEY, anthropic needs ANTHROPIC_API_KEY; both take an
-# optional base_url. ollama needs base_url and no key.
-# agent:
-#  provider: openai
-#  provider: anthropic
-#  provider: ollama
-#  base_url: "http://127.0.0.1:11434/v1"
+# Agent settings are synchronized with the gear settings in the UI.
+# provider: openai | anthropic | ollama
+# OpenAI uses ChatGPT sign-in when connected, otherwise the OPENAI_API_KEY environment variable.
+# Anthropic requires the ANTHROPIC_API_KEY environment variable.
+# Set API-key environment variables before launching the app.
+# base_url is the Ollama API URL.
+# Sign-in credentials are stored securely; API keys are read from the environment.
+
+agent:
+  provider: openai
+  model: gpt-6-astra
+  thinking: medium
+  auto_approve: true
+  base_url: http://127.0.0.1:11434/v1

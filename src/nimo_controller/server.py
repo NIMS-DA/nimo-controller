@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
+import tempfile
 
 from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -34,6 +35,7 @@ from .paths import (
     STATIC_DIR,
     TEMPLATES_DIR,
     USER_DATA_DIR,
+    USER_CONFIG_DIR,
     ensure_user_dirs,
     resolve_config_path,
 )
@@ -53,6 +55,43 @@ def _load_config(path: Path = _CONFIG_PATH) -> dict:
         with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
+
+
+def read_agent_config(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    agent = (data or {}).get("agent", {})
+    if not isinstance(agent, dict):
+        raise ValueError("config.yaml: agent must be a mapping.")
+    return agent
+
+
+def write_agent_config(path: Path, changes: dict) -> dict:
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    agent = read_agent_config(path)
+    agent.update(changes)
+    node = yaml.compose(original)
+    block = yaml.safe_dump({"agent": agent}, allow_unicode=True, sort_keys=False)
+    if node is not None and not isinstance(node, yaml.MappingNode):
+        raise ValueError("config.yaml must be a mapping.")
+    entries = node.value if node else []
+    match = next(((key, value) for key, value in entries if key.value == "agent"), None)
+    if match:
+        key, value = match
+        original = original[:key.start_mark.index] + block + original[value.end_mark.index:]
+    else:
+        original = original.rstrip() + "\n\n" + block
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".agent-config-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(original)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return agent
 
 
 _cfg = _load_config()
@@ -752,25 +791,13 @@ async def lifespan(app: FastAPI):
     # importing pydantic_ai is slow — skip it entirely when the agent is off.
     app.state.agent = None
     app.state.agent_error = None
+    from .chatgpt_auth import ChatGPTAuth
+    app.state.chatgpt_auth = ChatGPTAuth(USER_CONFIG_DIR)
+    app.state.connection_lock = asyncio.Lock()
+    app.state.connection = str(AGENT_CONFIG.get("provider", "openai"))
     if ENABLE_AGENT:
-        # Model and reasoning settings are selected in the UI.
-        stale = [k for k in ("model", "thinking") if k in AGENT_CONFIG]
-        if stale:
-            log.warning("config.yaml: agent.%s is no longer used — the model and "
-                        "reasoning effort are chosen in the UI",
-                        " / agent.".join(stale))
         try:
-            from .agent import AgentRuntime
-
-            app.state.agent = AgentRuntime(
-                AGENT_CONFIG,
-                list_tools=_collect_tools,
-                call_tool=_agent_call_tool,
-                list_parameters=_nimo_parameters,
-                activity=_activity_digest,
-                make_report=_make_report,
-                await_workflow=_await_workflow,
-            )
+            app.state.agent = await _create_agent(app.state.connection)
             log.info("Chat agent ready: %s / %s",
                      app.state.agent.provider, app.state.agent.model)
         except Exception as e:
@@ -780,6 +807,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await app.state.chatgpt_auth.cancel()
+        if app.state.agent:
+            await app.state.agent._provider.client.close()
         job: Optional[Job] = app.state.current_workflow
         if job and job.task and not job.task.done():
             job.task.cancel()
@@ -793,6 +823,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def protect_chatgpt_connection(request: Request, call_next):
+    """The shared local agent must not expose a personal ChatGPT grant remotely."""
+    path = request.url.path
+    management = path in ("/agent/connection", "/agent/settings") or path.startswith("/agent/chatgpt")
+    runtime = getattr(app.state, "agent", None)
+    personal = path.startswith("/agent/") and runtime and runtime.provider == "chatgpt"
+    if management or personal:
+        origin = request.headers.get("origin")
+        if (request.url.hostname not in ("localhost", "127.0.0.1", "::1")
+                or not request.client or request.client.host not in ("127.0.0.1", "::1")
+                or (origin and origin != f"{request.url.scheme}://{request.url.netloc}")
+                or request.headers.get("sec-fetch-site") == "cross-site"
+                or (management and request.method != "GET" and request.headers.get("x-nimo-request") != "1")):
+            return JSONResponse({"ok": False, "error": "ChatGPT connections require the local NIMO Controller page."}, status_code=403)
+    response = await call_next(request)
+    if management:
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1175,6 +1226,224 @@ async def reconnect_server(name: str):
 # Chat agent API (experimental)
 # ---------------------------------------------------------------------------
 
+def _persist_agent_config(changes: dict) -> None:
+    global AGENT_CONFIG
+    AGENT_CONFIG = write_agent_config(_CONFIG_PATH, changes)
+
+
+async def _sync_agent_config() -> None:
+    """Adopt file edits when the UI refreshes, never during an active reply."""
+    global AGENT_CONFIG
+    async with app.state.connection_lock:
+        latest = read_agent_config(_CONFIG_PATH)
+        if latest == AGENT_CONFIG:
+            return
+        old = app.state.agent
+        if old and old.lock.locked():
+            return
+        previous = AGENT_CONFIG
+        AGENT_CONFIG = latest
+        try:
+            new = await _create_agent(str(AGENT_CONFIG.get("provider", "openai")))
+        except Exception:
+            AGENT_CONFIG = previous
+            raise
+        app.state.agent = new
+        app.state.connection = str(AGENT_CONFIG.get("provider", "openai"))
+        app.state.agent_error = None
+        if old:
+            await old._provider.client.close()
+
+
+def _ollama_base_url() -> str:
+    return AGENT_CONFIG.get("base_url") or "http://127.0.0.1:11434/v1"
+
+
+async def _create_agent(connection: str, profile_id: Optional[str] = None, base_url: Optional[str] = None):
+    from .agent import AgentRuntime
+    if connection not in ("openai", "anthropic", "ollama"):
+        raise ValueError("Unknown agent connection.")
+    profile = ""
+    provider = connection
+    if connection == "openai":
+        try:
+            status = await app.state.chatgpt_auth.status()
+        except Exception:
+            # Allow API-key setup when the credential store cannot be opened.
+            # An explicitly selected account must still report the failure.
+            if profile_id or not os.environ.get("OPENAI_API_KEY", "").strip():
+                raise
+            status = {"profiles": [], "active": None}
+        if profile_id and profile_id not in {p["id"] for p in status["profiles"]}:
+            raise ValueError("Choose a saved ChatGPT account.")
+        profile = profile_id or status["active"] or ""
+        selected = next((p for p in status["profiles"] if p["id"] == profile), None)
+        if selected and selected["connected"]:
+            provider = "chatgpt"
+        elif not os.environ.get("OPENAI_API_KEY"):
+            # Keep the sign-in UI usable even before either credential is set.
+            provider = "chatgpt"
+    configured = str(AGENT_CONFIG.get("provider", "openai"))
+    raw = dict(AGENT_CONFIG) if configured == connection else {}
+    raw["provider"] = provider
+    raw["base_url"] = (base_url or _ollama_base_url()) if provider == "ollama" else None
+    runtime = AgentRuntime(
+        raw, list_tools=_collect_tools, call_tool=_agent_call_tool,
+        list_parameters=_nimo_parameters, activity=_activity_digest,
+        make_report=_make_report, await_workflow=_await_workflow,
+        chatgpt_auth=app.state.chatgpt_auth, chatgpt_profile=profile,
+    )
+    try:
+        if configured == connection and AGENT_CONFIG.get("model"):
+            runtime.apply_settings(AGENT_CONFIG["model"], AGENT_CONFIG.get("thinking"))
+        runtime.auto_approve = bool(AGENT_CONFIG.get("auto_approve", True))
+        return runtime
+    except Exception:
+        await runtime._provider.client.close()
+        raise
+
+
+@app.get("/agent/connection")
+async def agent_connection():
+    from .chatgpt_auth import USAGE_URL, ChatGPTError
+    config_error = None
+    if ENABLE_AGENT:
+        try:
+            await _sync_agent_config()
+        except Exception as exc:
+            config_error = f"Could not apply config.yaml: {exc}"
+    try:
+        chatgpt = await app.state.chatgpt_auth.status()
+    except Exception as exc:
+        # A damaged credential store must not prevent switching back to API keys.
+        chatgpt = {"profiles": [], "active": None, "usage_url": USAGE_URL,
+                   "attempt": {"status": "error", "error": str(exc) if isinstance(exc, ChatGPTError)
+                               else "Could not read protected ChatGPT credentials."}}
+    return {"ok": True, "enabled": ENABLE_AGENT,
+            "connection": getattr(app.state, "connection", "openai"),
+            "effective_provider": getattr(app.state.agent, "provider", None),
+            "configured_provider": AGENT_CONFIG.get("provider", "openai"),
+            "auto_approve": bool(AGENT_CONFIG.get("auto_approve", True)),
+            "api_keys": {"openai": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+                         "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())},
+            "ollama_base_url": _ollama_base_url(),
+            "error": config_error or getattr(app.state, "agent_error", None),
+            "chatgpt": chatgpt}
+
+
+class ConnectionRequest(BaseModel):
+    connection: str
+    profile_id: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@app.post("/agent/connection")
+async def select_agent_connection(req: ConnectionRequest):
+    if not ENABLE_AGENT:
+        return {"ok": False, "error": "Set enable_agent: true in config.yaml first."}
+    if req.connection not in ("openai", "anthropic", "ollama"):
+        return {"ok": False, "error": "Unknown connection."}
+    async with app.state.connection_lock:
+        old = app.state.agent
+        if old and old.lock.locked():
+            return {"ok": False, "error": "Stop the current agent reply before switching connections."}
+        try:
+            if req.connection == "openai" and not os.environ.get("OPENAI_API_KEY", "").strip():
+                auth_status = await app.state.chatgpt_auth.status()
+                selected = req.profile_id or auth_status["active"]
+                if not any(p["id"] == selected and p["connected"] for p in auth_status["profiles"]):
+                    return {"ok": False, "error": "Sign in with ChatGPT or set OPENAI_API_KEY before saving."}
+            if req.base_url is not None:
+                from urllib.parse import urlsplit
+                url = urlsplit(req.base_url.strip())
+                if (req.connection != "ollama" or url.scheme not in ("http", "https")
+                        or not url.hostname or url.username or url.password or url.query or url.fragment):
+                    return {"ok": False, "error": "Enter an http:// or https:// Ollama base URL without credentials, query, or fragment."}
+            new = await _create_agent(req.connection, req.profile_id, req.base_url.strip() if req.base_url else None)
+            # Recheck after credential I/O: a new turn may have started meanwhile.
+            if old and old.lock.locked():
+                await new._provider.client.close()
+                return {"ok": False, "error": "Stop the current agent reply before switching connections."}
+            if req.connection == "openai" and req.profile_id:
+                await app.state.chatgpt_auth.select(req.profile_id)
+            connection = req.connection
+            try:
+                _persist_agent_config({
+                    "provider": connection,
+                    "base_url": req.base_url.strip() if req.base_url is not None else _ollama_base_url(),
+                    "model": new.model or None, "thinking": new.thinking,
+                })
+            except Exception:
+                await new._provider.client.close()
+                raise
+            app.state.agent = new
+            app.state.agent_error = None
+            app.state.connection = connection
+            attempt = app.state.chatgpt_auth.result
+            if attempt.get("status") == "complete" and attempt.get("profile_id") == new.chatgpt_profile:
+                app.state.chatgpt_auth.result = {"status": "idle"}
+            _save_agent_state("", None)
+            if old:
+                await old._provider.client.close()
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+
+class ChatGPTProfileRequest(BaseModel):
+    profile_id: Optional[str] = None
+
+
+@app.post("/agent/chatgpt/welcome")
+async def chatgpt_welcome(req: ChatGPTProfileRequest):
+    try:
+        await app.state.chatgpt_auth.acknowledge_welcome(req.profile_id or "")
+        return {"ok": True}
+    except Exception:
+        return {"ok": False, "error": "Could not save this preference. Try again."}
+
+
+@app.post("/agent/chatgpt/sign-in")
+async def chatgpt_sign_in(req: ChatGPTProfileRequest):
+    from .chatgpt_auth import ChatGPTError
+    if not ENABLE_AGENT:
+        return {"ok": False, "error": "Set enable_agent: true in config.yaml first."}
+    async with app.state.connection_lock:
+        try:
+            url = await app.state.chatgpt_auth.start(req.profile_id)
+            return {"ok": True, "url": url}
+        except ChatGPTError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception:
+            return {"ok": False, "error": "Could not start ChatGPT sign-in. Check local credential storage and try again."}
+
+
+@app.post("/agent/chatgpt/cancel")
+async def chatgpt_cancel():
+    async with app.state.connection_lock:
+        await app.state.chatgpt_auth.cancel()
+    return {"ok": True}
+
+
+@app.post("/agent/chatgpt/logout")
+async def chatgpt_logout(req: ChatGPTProfileRequest):
+    async with app.state.connection_lock:
+        runtime = app.state.agent
+        if runtime and runtime.lock.locked():
+            return {"ok": False, "error": "Stop the current agent reply before signing out."}
+        try:
+            warning = await app.state.chatgpt_auth.logout(req.profile_id or "")
+            if runtime and runtime.provider == "chatgpt" and runtime.chatgpt_profile == req.profile_id:
+                replacement = await _create_agent("openai", req.profile_id)
+                app.state.agent = replacement
+                app.state.connection = "openai"
+                app.state.agent_error = None
+                await runtime._provider.client.close()
+                _save_agent_state("", None)
+            return {"ok": True, "warning": warning}
+        except Exception:
+            return {"ok": False, "error": "Could not sign out. Try again."}
+
 class AgentChatRequest(BaseModel):
     prompt: str
     auto_approve: bool = True
@@ -1233,6 +1502,12 @@ async def agent_chat(req: AgentChatRequest):
         completed = False
         try:
             async with runtime.lock:
+                if runtime is not app.state.agent:
+                    yield sse(1, "error", {"error": "The connection changed. Send your message again."})
+                    return
+                if app.state.connection_lock.locked():
+                    yield sse(1, "error", {"error": "Connection settings are changing. Try again."})
+                    return
                 runtime.auto_approve = req.auto_approve
                 async for event, payload in runtime.stream_reply(req.prompt):
                     n += 1
@@ -1246,7 +1521,12 @@ async def agent_chat(req: AgentChatRequest):
         except Exception as e:
             # An error leaves the previous turns intact, so keep the history.
             completed = True
-            yield sse(n + 1, "error", {"error": f"{type(e).__name__}: {e}"})
+            from .chatgpt_auth import usage_error_code
+            code = usage_error_code(e) if runtime.provider == "chatgpt" else None
+            yield sse(n + 1, "error", {
+                "error": "Review your plan or this app's limit in ChatGPT settings." if code else f"{type(e).__name__}: {e}",
+                "code": code, "provider": runtime.provider,
+            })
         finally:
             if not completed:
                 runtime.reset()
@@ -1270,6 +1550,8 @@ def _save_agent_state(model: str, thinking: Any) -> None:
     try:
         with open(AGENT_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump({"provider": app.state.agent.provider,
+                       "connection": app.state.connection,
+                       "profile_id": app.state.agent.chatgpt_profile,
                        "model": model, "thinking": thinking}, f, indent=2)
     except Exception as e:
         log.warning("Could not save the agent settings: %s", e)
@@ -1293,30 +1575,46 @@ async def agent_models():
     if problem:
         return {"ok": False, "error": problem}
     runtime = app.state.agent
+    async with runtime.lock:
+        if runtime is not app.state.agent:
+            return {"ok": False, "error": "The connection changed. Reload the model list."}
+        return await _agent_models(runtime)
+
+
+async def _agent_models(runtime):
+    code = None
     try:
         models = await runtime.list_models()
         error = None
     except Exception as e:
         models, error = [], f"{type(e).__name__}: {e}"
+        if runtime.provider == "chatgpt":
+            from .chatgpt_auth import usage_error_code
+            code = usage_error_code(e)
 
     # Only when nothing has been chosen yet this run — never overrides a live
     # setting, so reloading the page mid-session cannot move the model.
-    if not runtime.model:
+    if not runtime.model and "model" not in AGENT_CONFIG:
         saved = _load_agent_state()
-        if saved.get("provider") == runtime.provider and saved.get("model") in models:
+        if (saved.get("provider") == runtime.provider and saved.get("model") in models
+                and (runtime.provider != "chatgpt" or saved.get("profile_id") == runtime.chatgpt_profile)):
             try:
                 runtime.apply_settings(saved["model"], saved.get("thinking"))
             except Exception as e:
                 log.warning("Could not restore the last agent settings: %s", e)
 
     return {"ok": True, "models": models, "error": error,
+            "error_code": code,
+            "model_names": runtime.model_names,
             "provider": runtime.provider, "model": runtime.model,
-            "thinking": runtime.thinking}
+            "thinking": runtime.thinking,
+            "auto_approve": bool(AGENT_CONFIG.get("auto_approve", True))}
 
 
 class AgentSettingsRequest(BaseModel):
-    model: str
+    model: Optional[str] = None
     thinking: Optional[Union[bool, str]] = None
+    auto_approve: Optional[bool] = None
 
 
 @app.post("/agent/settings")
@@ -1328,9 +1626,20 @@ async def agent_settings(req: AgentSettingsRequest):
     runtime = app.state.agent
     # Wait for any in-flight reply so the model cannot change mid-stream.
     async with runtime.lock:
+        if runtime is not app.state.agent or app.state.connection_lock.locked():
+            return {"ok": False, "error": "The connection changed. Reload the model list."}
         try:
-            runtime.apply_settings(req.model, req.thinking)
+            old_model, old_thinking = runtime.model, runtime.thinking
+            changes = {}
+            if req.model is not None:
+                runtime.apply_settings(req.model, req.thinking)
+                changes.update(model=runtime.model, thinking=runtime.thinking)
+            if req.auto_approve is not None:
+                changes["auto_approve"] = req.auto_approve
+            _persist_agent_config(changes)
         except Exception as e:
+            runtime.model, runtime.thinking = old_model, old_thinking
+            runtime._agent = None
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         # Saved only once the change actually took, so a rejected model is not
         # what the next launch comes back to.

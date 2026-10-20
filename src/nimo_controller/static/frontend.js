@@ -1136,6 +1136,38 @@
   function initSettingsPanel() {
     const panel = $("settingsPanel"); if (!panel) return;
     panel.innerHTML = `<div class="settings-body">
+      <div class="settings-section" id="agentConnectionSection" hidden>
+        <label>LLM provider
+          <select id="agentConnectionSelect" class="settings-input">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </label>
+        <p id="agentCredentialNotice" class="agent-credential-notice" role="status" hidden></p>
+        <div id="ollamaSettings" hidden>
+          <label for="ollamaBaseUrl">Ollama base URL</label>
+          <input id="ollamaBaseUrl" class="settings-input" type="url" placeholder="http://127.0.0.1:11434/v1" />
+        </div>
+        <div id="chatgptSettings" hidden>
+          <label>Account <select id="chatgptProfileSelect" class="settings-input"></select></label>
+          <div id="chatgptConnectedAccount" class="chatgpt-connected-account" role="status" hidden>
+            <span class="chatgpt-connected-dot" aria-hidden="true"></span>
+            <div><strong>Connected</strong><span id="chatgptConnectedName"></span></div>
+          </div>
+          <p id="chatgptSignInHelp">Sign in and approve access to use your ChatGPT plan or credits instead of API billing.</p>
+          <div class="siwc-actions">
+            <button id="chatgptSignIn" class="siwc-signin" type="button">
+              <img src="/static/chatgpt-logo-white.svg" alt="" />Continue with ChatGPT
+            </button>
+            <a id="chatgptUsage" class="btn btn-primary chatgpt-account-action" target="_blank" rel="noopener noreferrer" hidden>Manage usage</a>
+            <button id="chatgptLogout" class="btn chatgpt-account-action chatgpt-signout" hidden>Sign out</button>
+            <button id="chatgptCancel" class="btn btn-ghost" hidden>Cancel sign-in</button>
+          </div>
+          <p id="chatgptStatus" role="status"></p>
+        </div>
+        <p id="agentConnectionError" class="settings-error" role="alert"></p>
+      </div>
       <div class="settings-section">
         <div id="settingsServerList" class="settings-server-list"><div class="settings-loading">Loading...</div></div>
         <div class="settings-add-form">
@@ -1149,7 +1181,50 @@
         <div id="settingsError" class="settings-error"></div>
       </div>
     </div>`;
+    // Keep agent preferences separate from the existing MCP server settings.
+    const agentBody = $("agentSettingsBody");
+    agentBody.append($("agentConnectionSection"));
+    const preferences = document.createElement("section");
+    preferences.className = "agent-preferences";
+    preferences.innerHTML = `<div id="agentPreferenceControls"></div>`;
+    agentBody.append(preferences);
+    const controls = $("agentPreferenceControls");
+    controls.append($("agentLevelSelect").closest("label"));
+    $("agentSettingsClose").addEventListener("click", () => $("agentSettingsDialog").close());
+    $("agentSettingsDialog").addEventListener("close", () => $("agentSettingsBtn").focus());
+    $("agentSettingsDialog").addEventListener("click", (event) => {
+      if (event.target !== event.currentTarget) return;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right ||
+          event.clientY < bounds.top || event.clientY > bounds.bottom) event.currentTarget.close();
+    });
     $("settingsAddBtn")?.addEventListener("click", handleAddServer);
+    $("agentConnectionSelect")?.addEventListener("change", () => {
+      renderConnectionDraft();
+    });
+    $("agentSaveSettings").addEventListener("click", saveAgentDialog);
+    $("chatgptProfileSelect")?.addEventListener("change", () => {
+      $("agentConnectionSelect").value = "openai";
+      changeAgentConnection();
+    });
+    $("chatgptSignIn")?.addEventListener("click", () => signInChatGPT(false));
+    $("chatgptLogout")?.addEventListener("click", async () => {
+      try {
+        const result = await connectionPost("/agent/chatgpt/logout", { profile_id: $("chatgptProfileSelect").value });
+        await refreshAgentConnection();
+        await loadAgentModels();
+        if (result.warning) $("agentConnectionError").textContent = result.warning;
+      } catch (e) { $("agentConnectionError").textContent = e.message; }
+    });
+    $("chatgptCancel")?.addEventListener("click", async () => {
+      try { await connectionPost("/agent/chatgpt/cancel"); await refreshAgentConnection(); }
+      catch (e) { $("agentConnectionError").textContent = e.message; }
+    });
+    $("chatgptWelcomeDismiss")?.addEventListener("click", dismissChatGPTWelcome);
+    $("chatgptWelcome")?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      dismissChatGPTWelcome();
+    });
     const urlIn = $("settingsServerUrl");
     urlIn?.addEventListener("focus", () => openUrlSuggest(urlIn.value));
     urlIn?.addEventListener("input", () => openUrlSuggest(urlIn.value));
@@ -1328,7 +1403,7 @@
   // =========================================================================
   function openSettings() {
     const ov = $("settingsOverlay");
-    if (ov) { ov.classList.add("active"); refreshServerList(); }
+    if (ov) { ov.classList.add("active"); refreshServerList(); refreshAgentConnection(); }
   }
 
   function closeSettings() {
@@ -1440,6 +1515,214 @@
     onRunFinished: null,
   };
 
+  let chatgptPoll = null;
+  let connectionSnapshot = null;
+
+  function renderConnectionDraft() {
+    if (!connectionSnapshot) return;
+    const connection = $("agentConnectionSelect").value;
+    const auth = connectionSnapshot.chatgpt;
+    const connected = auth.profiles.find(p => p.id === $("chatgptProfileSelect").value)?.connected;
+    const pending = ["pending", "exchanging"].includes(auth.attempt.status);
+    $("ollamaSettings").hidden = connection !== "ollama";
+    $("chatgptSettings").hidden = connection !== "openai";
+    const missingKey = connection === "openai"
+      ? !connected && !connectionSnapshot.api_keys?.openai
+      : connection === "anthropic" && !connectionSnapshot.api_keys?.anthropic;
+    const keyName = connection === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+    const hasKey = !!connectionSnapshot.api_keys?.[connection];
+    const usingKey = connectionSnapshot.connection === connection &&
+      connectionSnapshot.effective_provider === (connection === "anthropic" ? "anthropic" : "openai");
+    $("agentCredentialNotice").textContent = hasKey
+      ? `${keyName}: Configured. ${usingKey ? "Using API key (API billing)." :
+          connection === "openai" && connected ? "Using ChatGPT sign-in; API key not in use." : "Save to use this API key."}`
+      : `${keyName}: Not set. ${connection === "openai" && connected ? "Not required while signed in." :
+          connection === "openai" ? "Sign in, or set the key and restart." : "Set the key and restart to save."}`;
+    $("agentCredentialNotice").hidden = connection === "ollama";
+    $("agentSaveSettings").disabled = pending || agentState.streaming || missingKey;
+  }
+
+  async function saveAgentDialog() {
+    const button = $("agentSaveSettings");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    $("agentConnectionError").textContent = "";
+    try {
+      const connection = $("agentConnectionSelect").value;
+      const baseUrl = $("ollamaBaseUrl").value.trim();
+      const changed = connection !== connectionSnapshot?.connection ||
+        (connection === "ollama" && baseUrl !== connectionSnapshot?.ollama_base_url);
+      if (changed) {
+        await connectionPost("/agent/connection", {
+          connection,
+          profile_id: connection === "openai" ? ($("chatgptProfileSelect").value || null) : null,
+          ...(connection === "ollama" ? { base_url: baseUrl } : {}),
+        });
+        await refreshAgentConnection();
+        await loadAgentModels();
+      }
+      $("agentSettingsDialog").close();
+    } catch (e) {
+      $("agentConnectionError").textContent = `Could not save: ${e.message}`;
+    } finally {
+      button.textContent = "Save";
+      renderConnectionDraft();
+    }
+  }
+  let chatgptAttemptHandled = false;
+  let chatgptWelcomeFocus = null;
+
+  async function dismissChatGPTWelcome() {
+    const modal = $("chatgptWelcome");
+    const button = $("chatgptWelcomeDismiss");
+    button.disabled = true;
+    try {
+      await connectionPost("/agent/chatgpt/welcome", { profile_id: modal.dataset.profile });
+      modal.close();
+      chatgptWelcomeFocus?.focus();
+    } catch (e) {
+      $("chatgptWelcomeError").textContent = e.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function showChatGPTUsageError(code) {
+    if (!["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"].includes(code)) return false;
+    $("agentChatgptLimitTitle").textContent = code === "subscription_sharing_usage_limit_exceeded"
+      ? "Usage limit reached" : "ChatGPT plan usage unavailable";
+    $("agentChatgptLimit").hidden = false;
+    return true;
+  }
+
+  async function connectionPost(path, body = {}) {
+    const response = await fetch(path, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Nimo-Request": "1" },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.error || "Connection failed.");
+    return result;
+  }
+
+  async function refreshAgentConnection() {
+    try {
+      const response = await fetch("/agent/connection");
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.error);
+      connectionSnapshot = data;
+      $("agentConnectionSection").hidden = !data.enabled;
+      if (!data.enabled) return;
+      $("agentConnectionSelect").value = data.connection;
+      $("agentAutoToggle").checked = data.auto_approve !== false;
+      const useChatGPT = data.connection === "openai";
+      $("chatgptSettings").hidden = !useChatGPT;
+      if (!useChatGPT) $("agentChatgptLimit").hidden = true;
+      const auth = data.chatgpt;
+      $("ollamaBaseUrl").value = data.ollama_base_url || "";
+      const picker = $("chatgptProfileSelect");
+      picker.replaceChildren();
+      if (!auth.profiles.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No connected accounts";
+        picker.append(option);
+      }
+      for (const profile of auth.profiles) {
+        const option = document.createElement("option");
+        option.value = profile.id;
+        option.textContent = `${profile.label}${profile.email ? ` · ${profile.email}` : ""}${profile.connected ? "" : " · signed out"}`;
+        picker.append(option);
+      }
+      if (auth.active) picker.value = auth.active;
+      const active = auth.profiles.find(p => p.id === picker.value);
+      agentState.chatgptSharing = useChatGPT && data.effective_provider === "chatgpt" && active?.id === auth.active && !!active?.sharing;
+      const pending = ["pending", "exchanging"].includes(auth.attempt.status);
+      $("chatgptSettings").hidden = !useChatGPT && !pending;
+      $("chatgptStatus").textContent = pending ? "Signing in…"
+        : auth.attempt.status === "error" ? auth.attempt.error
+        : active?.sharing ? ""
+        : active?.connected ? "Plan usage is not enabled. Sign out and sign in again to enable it."
+        : "";
+      $("chatgptUsage").href = auth.usage_url;
+      $("chatgptUsage").hidden = !active?.connected;
+      const welcome = $("chatgptWelcome");
+      if (agentState.chatgptSharing && !active.welcome_seen && !welcome.open) {
+        welcome.dataset.profile = active.id;
+        $("chatgptWelcomeError").textContent = "";
+        chatgptWelcomeFocus = document.activeElement;
+        welcome.showModal();
+      } else if (!agentState.chatgptSharing && welcome.open) {
+        welcome.close();
+      }
+      $("chatgptLogout").disabled = !active?.connected || pending;
+      $("chatgptLogout").hidden = !active?.connected;
+      $("chatgptSignIn").hidden = !!active?.connected && !pending;
+      $("chatgptSignInHelp").hidden = !!active?.connected;
+      $("chatgptConnectedAccount").hidden = !active?.connected;
+      $("chatgptConnectedName").textContent = active?.email || active?.label || "";
+      $("chatgptSignIn").disabled = pending || agentState.streaming;
+      picker.closest("label").hidden = auth.profiles.length < 2;
+      picker.disabled = !auth.profiles.length || pending || agentState.streaming;
+      $("agentConnectionSelect").disabled = pending || agentState.streaming;
+      $("chatgptCancel").hidden = auth.attempt.status !== "pending";
+      $("agentConnectionError").textContent = data.error || "";
+      renderConnectionDraft();
+      if (pending && !chatgptPoll) {
+        chatgptPoll = setTimeout(async () => {
+          chatgptPoll = null;
+          await refreshAgentConnection();
+        }, 1500);
+      } else if (!pending && chatgptPoll) {
+        clearTimeout(chatgptPoll); chatgptPoll = null;
+      }
+      if (auth.attempt.status === "complete" && !chatgptAttemptHandled) {
+        chatgptAttemptHandled = true;
+        await connectionPost("/agent/connection", { connection: "openai", profile_id: auth.attempt.profile_id });
+        await refreshAgentConnection();
+        await loadAgentModels();
+        logInfo("ChatGPT", "Account connected. Check plan usage status in Agent settings.");
+      }
+    } catch (e) {
+      $("agentConnectionError").textContent = e.message;
+    }
+  }
+
+  async function changeAgentConnection() {
+    try {
+      const connection = $("agentConnectionSelect").value;
+      await connectionPost("/agent/connection", {
+        connection, profile_id: connection === "openai" ? ($("chatgptProfileSelect").value || null) : null,
+      });
+      await refreshAgentConnection();
+      await loadAgentModels();
+    } catch (e) {
+      await refreshAgentConnection();
+      $("agentConnectionError").textContent = e.message;
+    }
+  }
+
+  async function signInChatGPT(newAccount) {
+    // Open during the click so browser popup blocking does not lose the login.
+    const popup = window.open("about:blank", "_blank");
+    if (!popup) {
+      $("agentConnectionError").textContent = "Allow popups for this page, then try again.";
+      return;
+    }
+    popup.opener = null;
+    try {
+      const result = await connectionPost("/agent/chatgpt/sign-in", {
+        profile_id: newAccount ? null : ($("chatgptProfileSelect").value || null),
+      });
+      chatgptAttemptHandled = false;
+      popup.location.href = result.url;
+      await refreshAgentConnection();
+    } catch (e) {
+      popup.close();
+      $("agentConnectionError").textContent = e.message;
+    }
+  }
+
   async function initAgentPrompt() {
     const cfg = await getConfig();
     if (!cfg?.enable_agent) return;
@@ -1448,11 +1731,25 @@
     if (!box || !input) return;
     agentState.enabled = true;
     box.hidden = false;
+    $("agentSettingsBtn")?.addEventListener("click", async () => {
+      $("agentSettingsDialog").showModal();
+      await refreshAgentConnection();
+      await loadAgentModels();
+    });
+    await refreshAgentConnection();
 
     await loadAgentModels();
     await restoreAgentHistory();
     $("agentModelSelect")?.addEventListener("change", () => applyAgentSettings());
     $("agentLevelSelect")?.addEventListener("change", () => applyAgentSettings());
+    $("agentAutoToggle")?.addEventListener("change", async () => {
+      try {
+        await connectionPost("/agent/settings", { auto_approve: $("agentAutoToggle").checked });
+      } catch (e) {
+        logError("Agent", e.message);
+        await refreshAgentConnection();
+      }
+    });
 
     const send = () => {
       const text = input.value.trim();
@@ -1505,7 +1802,9 @@
     try {
       const d = await (await fetch("/agent/models")).json();
       if (!d.ok) throw new Error(d.error);
-      if (label) label.textContent = d.provider || "";
+      if (label) label.textContent = d.provider === "chatgpt"
+        ? (agentState.chatgptSharing ? "OpenAI · ChatGPT" : "OpenAI · not connected")
+        : ({ openai: "OpenAI", anthropic: "Anthropic", ollama: "Ollama" }[d.provider] || d.provider || "");
       if (select) {
         // Keep the active model selectable even if the endpoint no longer
         // lists it, so the current setting is never silently changed.
@@ -1515,7 +1814,7 @@
         for (const name of names) {
           const opt = document.createElement("option");
           opt.value = name;
-          opt.textContent = name;
+          opt.textContent = d.model_names?.[name] || name;
           select.appendChild(opt);
         }
         // Nothing picked yet (a fresh server): fall back to the first model so
@@ -1523,10 +1822,11 @@
         select.value = d.model || names[0] || "";
         agentState.modelListOk = names.length > 0;
         select.disabled = !agentState.modelListOk;
-        if (!agentState.modelListOk && label) label.textContent = `${d.provider} · (no models)`;
+        if (!agentState.modelListOk && label && d.provider !== "chatgpt") label.textContent = `${d.provider} · (no models)`;
       }
       writeThinking(d.thinking);
-      if (d.error) logWarn("Agent", `Could not list models: ${d.error}`);
+      $("agentAutoToggle").checked = d.auto_approve !== false;
+      if (d.error && !showChatGPTUsageError(d.error_code)) logWarn("Agent", `Could not list models: ${d.error}`);
       // Push those fallbacks so the server matches what is on screen. Never
       // reloads on failure — this runs inside loadAgentModels() and would recurse.
       const unset = !d.model || d.thinking === null || d.thinking === undefined;
@@ -1547,7 +1847,7 @@
     try {
       const res = await fetch("/agent/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Nimo-Request": "1" },
         body: JSON.stringify({ model, thinking }),
       });
       const d = await res.json();
@@ -1650,12 +1950,7 @@
     if (!busy) input?.focus();
   }
 
-  // How long a silent wait runs before the bubble says it is waiting, and
-  // before it offers a reason. Under WAIT_NOTICE_S the blinking caret carries
-  // it on its own and a notice would only flicker past; past WAIT_HINT_S the
-  // wait is long enough that the honest answer is "the model is still loading".
-  const WAIT_NOTICE_S = 3;
-  const WAIT_HINT_S = 15;
+  const WAIT_HINT_S = 20;
 
   // =========================================================================
   // Markdown + math rendering (agent replies)
@@ -1770,10 +2065,7 @@
     const thinkingEl = document.createElement("div");
     thinkingEl.className = "agent-msg__thinking";
     thinkingEl.hidden = true;
-    // Says why nothing is happening yet. The blinking caret alone reads as a
-    // hang once the wait runs past a few seconds, and the first message of a
-    // session usually does: the backend has to load the model before it can
-    // answer at all.
+    // Remains visible between reasoning updates as well as before first output.
     const waitEl = document.createElement("div");
     waitEl.className = "agent-msg__waiting";
     waitEl.hidden = true;
@@ -1782,7 +2074,8 @@
 
     const setOpen = (open) => {
       thinkingEl.hidden = !open;
-      toggle.textContent = open ? "hide thinking" : "show thinking";
+      toggle.textContent = open ? "Hide reasoning" : "Show reasoning";
+      toggle.setAttribute("aria-expanded", String(open));
     };
     toggle.addEventListener("click", () => setOpen(thinkingEl.hidden));
 
@@ -1795,25 +2088,18 @@
       raw: "",
       _wait: null,
       _timer: null,
-      /**
-       * Start explaining the wait, once it is long enough to need explaining.
-       *
-       * Nothing is shown for the first few seconds: a quick answer would only
-       * flash a notice on its way past. After that the elapsed time ticks, and
-       * once the wait is long enough to look broken it says why it might be —
-       * the first message of a session pays for loading the model.
-       */
-      startWaiting() {
-        const began = Date.now();
+      startWaiting(phase = "Preparing response") {
+        this._phase = phase;
+        if (this._wait) { this._tick(); return; }
+        const began = performance.now();
         const tick = () => {
-          const s = Math.round((Date.now() - began) / 1000);
-          if (s < WAIT_NOTICE_S) return;
+          const s = Math.floor((performance.now() - began) / 1000);
           this.waitEl.hidden = false;
-          this.waitEl.textContent = s < WAIT_HINT_S
-            ? `Waiting for the model… ${s}s`
-            : `Waiting for the model… ${s}s — the first message also loads it, `
-              + `which can take a while.`;
+          this.waitEl.textContent = `${this._phase}… ${s}s`
+            + (s >= WAIT_HINT_S ? " — Still waiting for a response. You can stop at any time." : "");
         };
+        this._tick = tick;
+        tick();
         this._wait = setInterval(tick, 1000);
       },
       /** The model answered (or gave up); the explanation is no longer wanted. */
@@ -1967,7 +2253,9 @@
     const model = $("agentModelSelect")?.value || "";
     const cards = new Map();   // tool_call_id -> card element
     const bars = new Map();    // tool_call_id -> retire the approval bar
+    const pendingTools = new Set();
     let msg = null, gotThinking = false, collapsed = false, stopped = false;
+    let hasResult = false;
 
     // Fold the reasoning away once the model moves on from it — whether that is
     // an answer or a tool call. Guarded so a bubble the user re-opened by hand
@@ -2022,9 +2310,7 @@
         const stick = isLogAtBottom(log);
         if (event === "thinking") {
           openBubble();
-          // Reasoning arriving is the model answering, so the wait is over
-          // even though the answer itself has not started.
-          msg.stopWaiting();
+          msg.startWaiting("Reasoning");
           if (!gotThinking) {
             // Open while it streams so the reasoning can be watched live.
             gotThinking = true;
@@ -2035,11 +2321,13 @@
           // The pane caps its own height — follow the newest line inside it.
           msg.thinkingEl.scrollTop = msg.thinkingEl.scrollHeight;
         } else if (event === "delta") {
+          if ((data.text || "").trim()) hasResult = true;
           openBubble();
           foldThinking();   // the answer leads, not the reasoning
           msg.append(data.text || "");
         } else if (event === "tool_call") {
           closeBubble();
+          pendingTools.add(data.call_id);
           // Same renderer as Blockly runs, so the cards look identical.
           const card = appendToolCard({
             server: data.server_id || "", tool: data.tool || "", args: data.args || {},
@@ -2049,13 +2337,20 @@
             if (data.needs_approval) bars.set(data.call_id, addApprovalBar(card, data.call_id));
           }
         } else if (event === "tool_output") {
+          hasResult = true;
           // Keyed by call id, not "most recent" — the model may run tools in parallel.
           const card = cards.get(data.call_id);
           // A result settles the question, even if the buttons were never pressed.
           const retire = bars.get(data.call_id);
           if (retire) { retire(); bars.delete(data.call_id); }
           if (card) updateCardOutput(card, data.output);
+          pendingTools.delete(data.call_id);
+          if (!pendingTools.size) {
+            openBubble();
+            msg.startWaiting("Preparing response");
+          }
         } else if (event === "workflow") {
+          hasResult = true;
           closeBubble();
           await applyAgentWorkflow(data);
           if (data.auto_run) {
@@ -2088,17 +2383,19 @@
           for (const retire of bars.values()) retire();
           bars.clear();
         } else if (event === "error") {
-          throw new Error(data.error || "unknown error");
+          const error = new Error(data.error || "unknown error");
+          error.code = data.provider === "chatgpt" ? data.code : null;
+          throw error;
         }
         stickLog(log, stick);
       }
-      const empty = !msg || !msg.textEl.textContent;
       closeBubble();
       if (stopped) {
         logWarn("Agent", "Stopped."
           + (execState.running ? " Canceling the workflow it started." : ""));
       }
-      else if (empty) logWarn("Agent", "The model returned an empty reply.");
+      else if (!hasResult) logWarn("Agent", "No answer was received. Please try again.");
+      if (!stopped) $("agentChatgptLimit").hidden = true;
     } catch (e) {
       // Nothing at all arrived — no point leaving an empty bubble behind, and
       // its waiting notice must not outlive the turn that started it.
@@ -2108,7 +2405,7 @@
         msg = null;
       }
       closeBubble();
-      logError("Agent", String(e));
+      if (!showChatGPTUsageError(e.code)) logError("Agent", String(e));
     } finally {
       // The hook closes over this turn's bubble; a run finishing after the turn
       // is over has nothing to announce.
