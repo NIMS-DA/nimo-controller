@@ -8,7 +8,8 @@ For every model listed in MODELS below, each instruction is converted into workf
 once per seed in SEEDS, and the behavior of the generated XML is judged against
 expected.xml. Two tables are printed: per-task o/x (one character per seed) and,
 per instruction kind (detailed, succinct, ...), the mean number of tasks solved
-per seed. Generated XML and .trace files are kept in each task's own
+per seed, followed by what the generations cost in tokens per model and method.
+Generated XML and .trace files are kept in each task's own
 eval_data/<task_name>/results/.
 """
 
@@ -20,21 +21,22 @@ import traceback
 from pathlib import Path
 
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.usage import RunUsage
 
 from compare_xml import trace_lines, trace_of
 from generate_clairify import generate as generate_clairify
 from generate_xml import generate as generate_pydantic
 
 # -- configuration: edit here, no command-line arguments ----------------------
-MODELS = ["gpt-oss:20b"]  # model names to evaluate
+MODELS = ["gemma4:31b"]  # model names to evaluate
 # Generation methods to compare: name -> generate function (one per module).
 METHODS = {"pydantic": generate_pydantic, "clairify": generate_clairify}
-PROVIDER = "ollama"           # None = agent.provider from config.yaml, or openai
-BASE_URL = "http://127.0.0.1:11434/v1" # None = agent.base_url from config.yaml
+PROVIDER = "ollama"       # None = agent.provider from config.yaml, or openai
+BASE_URL = "http://100.92.112.72:11434/v1"           # None = agent.base_url from config.yaml
 THINKING = None           # None = the model's own default
 TEMPERATURE = None        # fixed for reproducibility; None = model's default
 SEEDS: list[int] = [0]   # one generation per seed; formatting slips
-TASKS: list[str] = []     # eval_data folder names to run, e.g. ["task00_ackley"]; empty = all
+TASKS: list[str] = ["task10_color_matching"]     # eval_data folder names to run, e.g. ["task00_ackley"]; empty = all
 TIMEOUT_S: float | None = 120   # limit per generation in seconds; None = no limit
 DATA_DIR = Path(__file__).parent / "eval_data"
 # -----------------------------------------------------------------------------
@@ -70,6 +72,12 @@ def _save(path: Path, xml: str, xml_too: bool = True) -> None:
 def main() -> None:
     # (case, instruction stem, column, seed) -> "o"/"x"/"E"/"T"
     results: dict[tuple[str, str, str, int], str] = {}
+    # (case, instruction stem, column) -> what those generations spent, and
+    # how many there were. Seeds are summed together, so one entry is one
+    # input under one model and method. Counted for every generation, the
+    # timed-out and failed ones included: their attempts cost tokens too.
+    spend: dict[tuple[str, str, str], RunUsage] = {}
+    runs: dict[tuple[str, str, str], int] = {}
     for model in MODELS:
         for method, generate in METHODS.items():
             column = f"{model} ({method})"
@@ -87,13 +95,15 @@ def main() -> None:
                     out_path = out_dir / f"{instruction_file.stem}.seed{seed}.xml"
                     catalog_data = json.loads(
                         (case / "catalog.json").read_text(encoding="utf-8"))
+                    usage = RunUsage()
                     try:
                         xml = generate(
                             instruction_file.read_text(encoding="utf-8"),
                             catalog_data, model, PROVIDER, BASE_URL,
                             THINKING, TEMPERATURE, seed,
                             timeout=TIMEOUT_S,
-                            attempts_log=str(out_path) + ".attempts.log")
+                            attempts_log=str(out_path) + ".attempts.log",
+                            usage=usage)
                     except asyncio.TimeoutError:
                         results[key] = "T"
                         print(f"[eval] {label}: TIMEOUT ({TIMEOUT_S}s)",
@@ -111,6 +121,13 @@ def main() -> None:
                         traceback.print_exc()
                         results[key] = "E"
                         continue
+                    finally:
+                        # Runs on the continue of every branch above as well,
+                        # which is the point: a generation that timed out or
+                        # errored still spent what it spent. Same key as
+                        # ``results``, minus the seed.
+                        spend.setdefault(key[:3], RunUsage()).incr(usage)
+                        runs[key[:3]] = runs.get(key[:3], 0) + 1
                     _save(out_path, xml)
                     # Judge from the saved artifact, so the verdict can always
                     # be reproduced from the files on disk.
@@ -182,6 +199,61 @@ def main() -> None:
         print(line(cn, cells))
     print("-" * (label_w + sum(col_w.values()) + 2 * (len(pairs) - 1)))
     print(line("average score", avg))
+
+    # What the generations cost: first per input, then per column. Every
+    # generation counts, the failed and timed-out ones included, so a column
+    # that solved little can still be the expensive one — which is the
+    # comparison these tables exist for. They carry their own widths rather
+    # than the score table's: the cells are numbers, not scores, and nothing
+    # lines up between them.
+    def table(title: str, headers: tuple[str, ...],
+              body: list[tuple[str, ...]]) -> None:
+        widths = [max([len(h)] + [len(r[i]) for r in body])
+                  for i, h in enumerate(headers)]
+        print()
+        print(title)
+        for row in [headers, *body]:
+            print("  ".join(v.ljust(w) for v, w in zip(row, widths)).rstrip())
+
+    def amount(total: int, n: int) -> str:
+        """A sum with the per-generation mean beside it."""
+        if not n or not total:
+            return f"{total:,}"
+        mean = total / n
+        # A decimal where it says something — a request count averages 1.8 —
+        # but not a tenth of a token.
+        return f"{total:,} ({mean:,.1f})" if mean < 10 else f"{total:,} ({mean:,.0f})"
+
+    # Per input: one row per instruction file, one cell per model and method.
+    table("token usage per input: input / output tokens"
+          + (f", summed over {len(SEEDS)} seeds" if len(SEEDS) > 1 else "")
+          + "; a generation that timed out reports none",
+          ("input", *(col(m, mt) for m, mt in pairs)),
+          [(task, *(f"{u.input_tokens:,} / {u.output_tokens:,}"
+                    for u in (spend.get((case.name, instruction_file.stem,
+                                         col(m, mt)), RunUsage())
+                              for m, mt in pairs)))
+           for task, instruction_file, case in tasks()])
+
+    # Per column: the same spend summed over every input.
+    totals: dict[str, tuple[RunUsage, int]] = {}
+    for m, mt in pairs:
+        column = col(m, mt)
+        used, n = RunUsage(), 0
+        for entry, spent in spend.items():
+            if entry[2] == column:
+                used.incr(spent)
+                n += runs[entry]
+        totals[column] = (used, n)
+    table("token usage in total: sum (mean per generation); input tokens "
+          "include cached reads",
+          ("model (method)", "generations", "requests", "input tokens",
+           "output tokens", "total tokens"),
+          [(column, str(n), amount(used.requests, n),
+            amount(used.input_tokens, n), amount(used.output_tokens, n),
+            amount(used.total_tokens, n))
+           for column, (used, n) in
+           ((col(m, mt), totals[col(m, mt)]) for m, mt in pairs)])
 
 
 if __name__ == "__main__":

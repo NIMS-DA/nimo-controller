@@ -352,18 +352,23 @@ def generate_with(write_fn: Any, instruction: str, catalog_data: dict,
                   temperature: float | None = None,
                   seed: int | None = None,
                   timeout: float | None = None,
-                  attempts_log: str | None = None) -> str:
+                  attempts_log: str | None = None,
+                  usage: RunUsage | None = None) -> str:
     """Run one workflow writer on *instruction* and return nimo-workflow XML.
 
     ``write_fn`` is a write_workflow-shaped coroutine function (this module's
     structured-output planner, or generate_clairify's spec-prompted one).
     ``catalog_data`` is a parsed catalog JSON from build_catalog.py. provider
-    and base_url default to config.yaml's agent section (then openai).
+    and base_url default to config.yaml's agent section (then openai), except
+    that overriding the provider also drops the config's base_url — it is that
+    provider's address, not this one's.
     ``timeout`` limits the whole run in seconds (asyncio.TimeoutError on
     expiry; None = no limit). ``attempts_log`` names a file that receives the
     per-attempt transcript (thinking, raw outputs, validation feedback) —
-    written even when the run fails or times out. Progress and retries are
-    logged to stderr.
+    written even when the run fails or times out. ``usage``, when given, is
+    incremented by what this generation spent — on a failed or timed-out run
+    too, since its attempts were paid for all the same. Progress and retries
+    are logged to stderr.
     """
     catalog = build_catalog(catalog_data["tools"], catalog_data["parameters"])
 
@@ -372,13 +377,22 @@ def generate_with(write_fn: Any, instruction: str, catalog_data: dict,
     if cfg_path.is_file():
         with open(cfg_path, encoding="utf-8") as f:
             agent_cfg = (yaml.safe_load(f) or {}).get("agent") or {}
-    provider = provider or agent_cfg.get("provider", "openai")
-    base_url = base_url or agent_cfg.get("base_url")
+    config_provider = agent_cfg.get("provider", "openai")
+    # The config's base_url belongs to the config's provider, so it is only
+    # inherited when the provider has not been overridden. Otherwise asking
+    # for, say, openai while the config points at an ollama server sends the
+    # request there, and every model name comes back 404.
+    if base_url is None and provider in (None, config_provider):
+        base_url = agent_cfg.get("base_url")
+    provider = provider or config_provider
 
     model = build_model(model_name, provider, base_url, thinking,
                         temperature, seed, timeout)
     handler, state = make_progress(timeout)
-    usage = RunUsage()   # filled in place by the run
+    # The run's own usage object, never the caller's: an abandoned thread
+    # (below) keeps adding to this one long after the caller has read its
+    # total, so what reaches ``usage`` is a snapshot taken once, at the end.
+    spent = RunUsage()   # filled in place by the run
     done: queue.Queue = queue.Queue(1)
 
     def run_planner() -> None:
@@ -388,7 +402,7 @@ def generate_with(write_fn: Any, instruction: str, catalog_data: dict,
         with capture_run_messages() as messages:
             try:
                 done.put(("ok", asyncio.run(asyncio.wait_for(
-                    write_fn(instruction, catalog, model, usage=usage,
+                    write_fn(instruction, catalog, model, usage=spent,
                              event_stream_handler=handler), timeout))))
             except BaseException as e:   # reraised on the calling thread
                 done.put(("error", e))
@@ -407,30 +421,35 @@ def generate_with(write_fn: Any, instruction: str, catalog_data: dict,
     # the process, and silenced so it cannot scribble over the next run.
     threading.Thread(target=run_planner, daemon=True).start()
     try:
-        outcome, value = done.get(
-            timeout=None if timeout is None else timeout + ABANDON_GRACE_S)
-    except queue.Empty:
-        state["abandoned"] = True
-        raise asyncio.TimeoutError(
-            f"generation did not stop {ABANDON_GRACE_S:.0f}s after its "
-            f"{timeout:.0f}s timeout; abandoned") from None
-    if outcome == "error":
-        raise value
-    print(f"[planner] done in {time.monotonic() - state['t0']:.0f}s — "
-          f"{state['attempt']} request(s), {usage.input_tokens} in / "
-          f"{usage.output_tokens} out tokens", file=sys.stderr)
-    return to_nimo_workflow_xml(value, catalog_data)
+        try:
+            outcome, value = done.get(
+                timeout=None if timeout is None else timeout + ABANDON_GRACE_S)
+        except queue.Empty:
+            state["abandoned"] = True
+            raise asyncio.TimeoutError(
+                f"generation did not stop {ABANDON_GRACE_S:.0f}s after its "
+                f"{timeout:.0f}s timeout; abandoned") from None
+        if outcome == "error":
+            raise value
+        print(f"[planner] done in {time.monotonic() - state['t0']:.0f}s — "
+              f"{state['attempt']} request(s), {spent.input_tokens} in / "
+              f"{spent.output_tokens} out tokens", file=sys.stderr)
+        return to_nimo_workflow_xml(value, catalog_data)
+    finally:
+        if usage is not None:
+            usage.incr(spent)
 
 
 def generate(instruction: str, catalog_data: dict, model_name: str,
              provider: str | None = None, base_url: str | None = None,
              thinking: str | None = None, temperature: float | None = None,
              seed: int | None = None, timeout: float | None = None,
-             attempts_log: str | None = None) -> str:
+             attempts_log: str | None = None,
+             usage: RunUsage | None = None) -> str:
     """The app's structured-output (pydantic) planner as XML generation."""
     return generate_with(write_workflow, instruction, catalog_data, model_name,
                          provider, base_url, thinking, temperature, seed,
-                         timeout, attempts_log)
+                         timeout, attempts_log, usage)
 
 
 def cli_main(generate_fn: Any, doc: str) -> None:
