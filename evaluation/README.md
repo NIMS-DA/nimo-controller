@@ -75,6 +75,18 @@ like `expected.xml`, `x` differs, `E` generation failed, `T` timed out. The
 `avg <kind>` rows are the mean number of tasks solved per seed for that
 instruction kind, and `pass total` counts every generation.
 
+Below the scores come two `token usage` tables. The first has one row per
+input (instruction file) and one cell per model and method, holding the input
+and output tokens that input cost, summed over the seeds. The second sums each
+column over every input: generations, requests and input/output/total tokens,
+each as the total with the mean per generation in brackets.
+
+Both count every generation, including the ones that failed or timed out —
+their attempts cost tokens too — so the cheapest column is not necessarily the
+one that solved the most. A generation that timed out usually reports 0 tokens:
+the counts come from the model's response, which never arrived, even though the
+server did process the prompt.
+
 Artifacts are written to `eval_data/<task>/results/`: `expected.xml.trace` plus
 `<model>/<method>/<instruction>.seed<N>.xml`, its `.trace`, and an
 `.attempts.log` of the model's retries.

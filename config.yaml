@@ -7,12 +7,12 @@ port: 8888
 # mcp_servers:
 #   sdl: "http://127.0.0.1:8001/mcp"
 
-# Agent mode: show a prompt box under the execution log (experimental)
+# Agent mode: show a prompt box under the execution log
 # enable_agent: true
 
 # Agent settings — provider: "openai" | "anthropic" | "ollama"
-# openai needs OPENAI_API_KEY, anthropic needs ANTHROPIC_API_KEY; both take an
-# optional base_url. ollama needs base_url and no key.
+# openai needs OPENAI_API_KEY, anthropic needs ANTHROPIC_API_KEY;
+# ollama needs base_url and no key.
 # agent:
 #  provider: openai
 #  provider: anthropic

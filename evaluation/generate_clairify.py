@@ -216,11 +216,12 @@ def generate(instruction: str, catalog_data: dict, model_name: str,
              provider: str | None = None, base_url: str | None = None,
              thinking: str | None = None, temperature: float | None = None,
              seed: int | None = None, timeout: float | None = None,
-             attempts_log: str | None = None) -> str:
+             attempts_log: str | None = None,
+             usage: RunUsage | None = None) -> str:
     """The CLAIRify-style spec-prompted planner as XML generation."""
     return generate_with(write_workflow_from_xml, instruction, catalog_data,
                          model_name, provider, base_url, thinking, temperature,
-                         seed, timeout, attempts_log)
+                         seed, timeout, attempts_log, usage)
 
 
 if __name__ == "__main__":
